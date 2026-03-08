@@ -6,11 +6,12 @@ from datetime import datetime, timedelta
 import time
 import os
 import requests
+import pickle
 from io import StringIO
 
 # Konfiguracja strony
 st.set_page_config(
-    page_title="NASDAQ Scanner - stooq.pl",
+    page_title="NASDAQ Live Scanner",
     page_icon="📊",
     layout="wide"
 )
@@ -31,36 +32,132 @@ st.markdown("""
         border-radius: 10px;
         text-align: center;
     }
+    .success-box {
+        background-color: #d4edda;
+        color: #155724;
+        padding: 1rem;
+        border-radius: 10px;
+    }
+    .warning-box {
+        background-color: #fff3cd;
+        color: #856404;
+        padding: 1rem;
+        border-radius: 10px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
 # Stałe
-CACHE_FILE = "nasdaq_cache.csv"
-CACHE_EXPIRY_HOURS = 6  # Cache ważny 6 godzin
+PRICE_CACHE_FILE = "price_cache.pkl"
 RVOL_THRESHOLD = 2.0
 
-# Lista spółek NASDAQ (sprawdzona, działająca)
-@st.cache_data(ttl=86400)
-def get_nasdaq_tickers():
-    """Zwraca listę aktywnych spółek NASDAQ"""
+# ============================================
+# FUNKCJE POBIERANIA AKTUALNEJ LISTY SPÓŁEK
+# ============================================
+
+@st.cache_data(ttl=3600)  # Odświeżaj co 1 godzinę!
+def get_live_nasdaq_tickers():
+    """
+    Pobiera AKTUALNĄ listę spółek NASDAQ bezpośrednio z giełdy
+    """
+    st.sidebar.info("📡 Pobieranie aktualnej listy spółek NASDAQ...")
+    
+    # Źródło 1: NASDAQ Trader (oficjalne, aktualizowane codziennie)
+    try:
+        url = "https://www.nasdaqtrader.com/dynamic/symdir/nasdaqtraded.txt"
+        df = pd.read_csv(url, sep='|')
+        
+        # Filtruj tylko aktywne spółki NASDAQ
+        stocks = df[
+            (df['NASDAQ Symbol'].notna()) &  # Ma ticker
+            (df['ETF'] == 'N') &  # To nie jest ETF
+            (df['TEST ISSUE'] == 'N')  # To nie jest testowa
+        ]
+        
+        tickers = stocks['NASDAQ Symbol'].tolist()
+        tickers = [t.strip() for t in tickers if t.strip()]
+        tickers = sorted(list(set(tickers)))
+        
+        st.sidebar.success(f"✅ Pobrano {len(tickers)} spółek z NASDAQ Trader")
+        return tickers
+        
+    except Exception as e:
+        st.sidebar.warning(f"⚠️ NASDAQ Trader niedostępny: {e}")
+    
+    # Źródło 2: GitHub (często aktualizowane)
+    try:
+        backup_url = "https://raw.githubusercontent.com/rreichel3/US-Stock-Symbols/main/nasdaq/nasdaq_tickers.txt"
+        response = requests.get(backup_url)
+        if response.status_code == 200:
+            tickers = response.text.strip().split('\n')
+            tickers = [t.strip().upper() for t in tickers if t.strip()]
+            st.sidebar.success(f"✅ Pobrano {len(tickers)} spółek z GitHub")
+            return tickers
+    except:
+        pass
+    
+    # Źródło 3: Lista awaryjna
+    st.sidebar.warning("⚠️ Używam lokalnej listy awaryjnej - dane mogą być nieaktualne!")
+    return get_fallback_tickers()
+
+def get_fallback_tickers():
+    """Lista awaryjna na wypadek całkowitego braku dostępu"""
     return [
-        "AAPL", "MSFT", "GOOGL", "META", "NVDA", "AMD", "TSLA", "NFLX",
-        "AMZN", "PEP", "COST", "CSCO", "ADBE", "CRM", "INTC", "QCOM",
-        "GILD", "REGN", "VRTX", "MRNA", "AMGN", "BIIB", "ILMN",
-        "ADI", "MCHP", "ON", "SWKS", "MPWR", "INTU", "NOW", "PANW",
-        "FTNT", "CRWD", "ZS", "OKTA", "SQ", "SOFI", "ABNB", "RIVN",
-        "PYPL", "BKNG", "SPOT", "UBER", "DASH", "ZM", "DOCU", "TWLO",
-        "EA", "TTWO", "ROKU", "PINS", "SNAP", "PLTR", "SNOW", "MDB"
+        "AAPL", "MSFT", "GOOGL", "META", "NVDA", "AMD", "INTC", "TSLA", "NFLX",
+        "AMZN", "PEP", "COST", "CSCO", "ADBE", "CRM", "ORCL", "IBM", "QCOM",
+        "TXN", "AVGO", "AMAT", "MU", "NXPI", "KLAC", "LRCX", "ASML", "SNPS",
+        "CDNS", "ADI", "MCHP", "ON", "SWKS", "QRVO", "MPWR", "INTU", "NOW",
+        "PANW", "FTNT", "CRWD", "ZS", "OKTA", "DDOG", "MDB", "SNOW", "PLTR",
+        "GILD", "REGN", "VRTX", "MRNA", "ILMN", "BNTX", "ALNY", "BIIB", "AMGN",
+        "SQ", "SOFI", "AFRM", "COIN", "HOOD", "ABNB", "RIVN", "PYPL", "BKNG",
+        "SPOT", "UBER", "DASH", "ZM", "DOCU", "TWLO", "EA", "TTWO", "ROKU"
     ]
 
-def fetch_from_stooq(ticker):
-    """Pobiera dane historyczne ze stooq.pl"""
+# ============================================
+# FUNKCJE CACHE'OWANIA DANYCH CENOWYCH
+# ============================================
+
+def load_price_cache():
+    """Wczytuje cache z danymi cenowymi"""
+    if not os.path.exists(PRICE_CACHE_FILE):
+        return None
+    
     try:
-        # stooq.pl format: https://stooq.pl/q/d/l/?s=aapl.us&i=d
-        url = f"https://stooq.pl/q/d/l/?s={ticker.lower()}.us&i=d"
+        with open(PRICE_CACHE_FILE, 'rb') as f:
+            cache = pickle.load(f)
         
+        # Sprawdź wiek cache
+        cache_age = datetime.now() - cache['timestamp']
+        if cache_age < timedelta(hours=24):  # Cache ważny 24h
+            st.sidebar.info(f"📦 Cache cenowy: {len(cache['data'])} spółek, {cache_age.seconds//3600}h stary")
+            return cache
+        else:
+            st.sidebar.warning(f"📦 Cache wygasł ({cache_age.seconds//3600}h temu)")
+            return None
+    except:
+        return None
+
+def save_price_cache(data, tickers_list):
+    """Zapisuje dane cenowe do cache"""
+    cache = {
+        'timestamp': datetime.now(),
+        'data': data,
+        'tickers': tickers_list
+    }
+    with open(PRICE_CACHE_FILE, 'wb') as f:
+        pickle.dump(cache, f)
+
+# ============================================
+# FUNKCJE POBIERANIA DANYCH ZE STOOQ.PL
+# ============================================
+
+def fetch_from_stooq(ticker):
+    """Pobiera dane historyczne ze stooq.pl dla pojedynczej spółki"""
+    try:
+        url = f"https://stooq.pl/q/d/l/?s={ticker.lower()}.us&i=d"
         df = pd.read_csv(url)
-        if df.empty or len(df) < 25:  # Minimum 25 dni do obliczeń
+        
+        if df.empty or len(df) < 25:
             return None
         
         # Stooq.pl ma kolumny: Data, Otwarcie, Max, Min, Zamknięcie, Wolumen
@@ -78,13 +175,11 @@ def calculate_indicators(df):
         if df is None or len(df) < 25:
             return None
         
-        # Przewijamy dane (najnowsze na końcu)
         df = df.sort_values('Date').reset_index(drop=True)
         
         # --- RVOL ---
         avg_volume = df['Volume'].tail(20).mean()
         
-        # RVOL dla ostatnich 5 dni
         rvol_values = []
         for i in range(1, 6):
             if len(df) >= i:
@@ -92,7 +187,6 @@ def calculate_indicators(df):
                 rvol = vol / avg_volume if avg_volume > 0 else 0
                 rvol_values.append(rvol)
         
-        # Warunek RVOL
         today_rvol = rvol_values[0] if rvol_values else 0
         last_4_rvol = rvol_values[1:5] if len(rvol_values) >= 5 else []
         days_over_2 = sum(1 for r in last_4_rvol if r > RVOL_THRESHOLD)
@@ -109,7 +203,6 @@ def calculate_indicators(df):
             else:
                 obv.append(obv[-1])
         
-        # Trend OBV (ostatnie 20 dni)
         obv_slope = np.polyfit(range(20), obv[-20:], 1)[0] if len(obv) >= 20 else 0
         obv_ok = obv_slope > 0
         
@@ -123,7 +216,6 @@ def calculate_indicators(df):
                 clv = 0
             ad_line.append(ad_line[-1] + (clv * df['Volume'].iloc[i]))
         
-        # Trend A/D
         ad_slope = np.polyfit(range(20), ad_line[-20:], 1)[0] if len(ad_line) >= 20 else 0
         ad_ok = ad_slope > 0
         
@@ -149,23 +241,17 @@ def calculate_indicators(df):
         cmf_ok = cmf > 0
         
         # --- Inne wskaźniki ---
-        # RSI
         delta = df['Close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
         rs = gain / loss
         rsi = 100 - (100 / (1 + rs.iloc[-1])) if loss.iloc[-1] != 0 else 50
         
-        # Zmiana procentowa
         change_1d = ((df['Close'].iloc[-1] / df['Close'].iloc[-2] - 1) * 100) if len(df) >= 2 else 0
         change_5d = ((df['Close'].iloc[-1] / df['Close'].iloc[-5] - 1) * 100) if len(df) >= 5 else 0
         
-        # Nazwa spółki (dla stooq.pl nie mamy, więc użyjemy tickera)
-        name = f"{df['Ticker'].iloc[0]}"
-        
         return {
             'Ticker': df['Ticker'].iloc[0],
-            'Nazwa': name,
             'Cena': round(df['Close'].iloc[-1], 2),
             'Wolumen': int(df['Volume'].iloc[-1]),
             'RVOL': round(today_rvol, 2),
@@ -184,85 +270,124 @@ def calculate_indicators(df):
     except Exception as e:
         return None
 
-def load_from_cache(tickers):
-    """Wczytuje dane z cache jeśli są świeże"""
-    if not os.path.exists(CACHE_FILE):
-        return None
+# ============================================
+# GŁÓWNA FUNKCJA SKANOWANIA
+# ============================================
+
+def scan_stocks(force_refresh=False):
+    """
+    Główna funkcja skanująca spółki
+    """
     
-    try:
-        df = pd.read_csv(CACHE_FILE)
+    # KROK 1: Pobierz aktualną listę spółek (ZAWSZE ŚWIEŻA!)
+    with st.spinner("📡 Pobieranie aktualnej listy spółek NASDAQ..."):
+        current_tickers = get_live_nasdaq_tickers()
+    
+    st.info(f"📊 Znaleziono {len(current_tickers)} aktywnych spółek")
+    
+    # KROK 2: Sprawdź cache
+    cached = load_price_cache()
+    
+    if cached and not force_refresh:
+        cached_tickers = set(cached['tickers'])
+        current_set = set(current_tickers)
         
-        # Sprawdź timestamp
-        if 'cache_time' in df.columns:
-            cache_time = pd.to_datetime(df['cache_time'].iloc[0])
-            age = datetime.now() - cache_time
+        # Znajdź różnice
+        new_tickers = current_set - cached_tickers
+        removed_tickers = cached_tickers - current_set
+        
+        if new_tickers:
+            st.warning(f"🆕 Znaleziono {len(new_tickers)} NOWYCH spółek!")
+        
+        if removed_tickers:
+            st.info(f"📉 Usunięto {len(removed_tickers)} spółek (delisting)")
+        
+        # Użyj cache dla starych spółek
+        all_results = []
+        
+        # Dodaj stare spółki z cache
+        old_data = [d for d in cached['data'] if d['Ticker'] in cached_tickers - removed_tickers]
+        all_results.extend(old_data)
+        
+        # Skanuj tylko nowe spółki
+        if new_tickers:
+            st.warning(f"🆕 Skanowanie {len(new_tickers)} nowych spółek...")
+            progress_bar = st.progress(0)
             
-            if age < timedelta(hours=CACHE_EXPIRY_HOURS):
-                st.info(f"📦 Używam danych z cache (sprzed {age.seconds//60} minut)")
-                return df
-    except:
-        pass
-    
-    return None
-
-def save_to_cache(results):
-    """Zapisuje wyniki do cache"""
-    df = pd.DataFrame(results)
-    df['cache_time'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    df.to_csv(CACHE_FILE, index=False)
-
-def scan_all_stocks(tickers, force_refresh=False):
-    """Główna funkcja skanowania"""
-    
-    # Sprawdź cache
-    if not force_refresh:
-        cached = load_from_cache(tickers)
-        if cached is not None:
-            return cached.to_dict('records')
-    
-    # Pobierz świeże dane
-    st.warning("⏳ Pobieranie świeżych danych ze stooq.pl (to zajmie ~5-10 minut)...")
-    
-    all_results = []
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    
-    for i, ticker in enumerate(tickers):
-        status_text.text(f"Skanowanie {i+1}/{len(tickers)}: {ticker}")
+            for i, ticker in enumerate(new_tickers):
+                df = fetch_from_stooq(ticker)
+                result = calculate_indicators(df)
+                if result:
+                    all_results.append(result)
+                
+                progress_bar.progress((i + 1) / len(new_tickers))
+                time.sleep(0.3)
+            
+            progress_bar.empty()
+            
+            # Zapisz zaktualizowany cache
+            save_price_cache(all_results, current_tickers)
+            st.success(f"✅ Zaktualizowano cache - dodano {len(new_tickers)} nowych spółek")
         
-        # Pobierz dane ze stooq
-        df = fetch_from_stooq(ticker)
+        return all_results, current_tickers
+    
+    else:
+        # KROK 3: Pierwsze skanowanie lub force_refresh - skanuj wszystko
+        st.warning(f"⏳ Pierwsze skanowanie {len(current_tickers)} spółek (to zajmie ~15-20 minut)...")
         
-        # Oblicz wskaźniki
-        result = calculate_indicators(df)
-        if result:
-            all_results.append(result)
+        estimated = len(current_tickers) // 60  # ~60 spółek na minutę
+        st.info(f"⏱️ Szacowany czas: około {estimated} minut")
         
-        # Aktualizuj progress
-        progress_bar.progress((i + 1) / len(tickers))
-        time.sleep(0.3)  # Grzecznościowe opóźnienie
-    
-    progress_bar.empty()
-    status_text.empty()
-    
-    # Zapisz do cache
-    if all_results:
-        save_to_cache(all_results)
-        st.success(f"✅ Pobrano {len(all_results)} spółek i zapisano w cache")
-    
-    return all_results
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        results = []
+        start_time = time.time()
+        
+        for i, ticker in enumerate(current_tickers):
+            status_text.text(f"Skanowanie {i+1}/{len(current_tickers)}: {ticker}")
+            
+            df = fetch_from_stooq(ticker)
+            result = calculate_indicators(df)
+            if result:
+                results.append(result)
+            
+            # Aktualizuj progress
+            progress_bar.progress((i + 1) / len(current_tickers))
+            
+            # Pokaż estymację czasu
+            if i > 0 and i % 50 == 0:
+                elapsed = time.time() - start_time
+                rate = i / elapsed
+                remaining = (len(current_tickers) - i) / rate
+                st.caption(f"⏱️ Pozostało około {int(remaining//60)}m {int(remaining%60)}s")
+            
+            time.sleep(0.2)
+        
+        progress_bar.empty()
+        status_text.empty()
+        
+        # Zapisz do cache
+        save_price_cache(results, current_tickers)
+        st.success(f"✅ Zakończono! Znaleziono {len(results)} spółek z danymi")
+        
+        return results, current_tickers
 
-# Główny interfejs
-st.markdown('<h1 class="main-header">📊 NASDAQ Scanner - dane ze stooq.pl</h1>', unsafe_allow_html=True)
+# ============================================
+# INTERFEJS UŻYTKOWNIKA
+# ============================================
+
+st.markdown('<h1 class="main-header">📊 NASDAQ Live Stock Scanner</h1>', unsafe_allow_html=True)
 
 # Sidebar
 with st.sidebar:
     st.image("https://img.icons8.com/color/96/000000/stock-exchange.png", width=80)
     st.header("🔍 Filtry")
     
-    # Lista spółek
-    tickers = get_nasdaq_tickers()
-    st.info(f"📊 Skanuję {len(tickers)} spółek")
+    st.markdown("---")
+    st.subheader("📋 Źródło danych")
+    st.info("✅ Lista spółek: NASDAQ Trader (na żywo)")
+    st.info("✅ Dane cenowe: stooq.pl + cache")
     
     st.markdown("---")
     
@@ -270,19 +395,11 @@ with st.sidebar:
     st.subheader("📊 RVOL")
     use_rvol = st.checkbox("Filtruj RVOL", value=True)
     if use_rvol:
-        st.info("""
-        **Warunek:**
-        - RVOL > 2 dzisiaj
-        - RVOL > 2 w ≥2 z ostatnich 4 dni
-        """)
-    
-    st.markdown("---")
+        st.caption("Warunek: >2 dziś i ≥2/4 dni")
     
     # Filtry przepływu
     st.subheader("💰 OBV/A/D/CMF")
     use_flow = st.checkbox("Filtruj wskaźniki >0", value=True)
-    
-    st.markdown("---")
     
     # Filtry cenowe
     st.subheader("💰 Cena")
@@ -291,25 +408,19 @@ with st.sidebar:
     
     st.markdown("---")
     
-    # Opcje skanowania
+    # Przyciski
     col1, col2 = st.columns(2)
     with col1:
         scan_btn = st.button("🔍 Skanuj", type="primary", use_container_width=True)
     with col2:
-        refresh_btn = st.button("🔄 Odśwież dane", use_container_width=True)
-    
-    if refresh_btn:
-        if os.path.exists(CACHE_FILE):
-            os.remove(CACHE_FILE)
-            st.success("Cache wyczyszczony!")
-            st.rerun()
+        refresh_btn = st.button("🔄 Nowe dane", use_container_width=True)
 
 # Główna logika
 if scan_btn or refresh_btn:
     force_refresh = refresh_btn
     
-    with st.spinner("Skanowanie..." if not force_refresh else "Pobieranie świeżych danych..."):
-        results = scan_all_stocks(tickers, force_refresh)
+    with st.spinner("Inicjowanie skanowania..."):
+        results, current_tickers = scan_stocks(force_refresh)
     
     if results:
         df = pd.DataFrame(results)
@@ -326,39 +437,47 @@ if scan_btn or refresh_btn:
         
         # Statystyki
         st.markdown("---")
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4 = st.columns(4)
         
         with col1:
             st.markdown(f"""
             <div class="stat-card">
-                <div style="font-size: 2rem;">{len(df)}</div>
-                <div>Znalezionych spółek</div>
+                <div style="font-size: 2rem;">{len(current_tickers)}</div>
+                <div>Spółek na NASDAQ</div>
             </div>
             """, unsafe_allow_html=True)
         
         with col2:
             st.markdown(f"""
             <div class="stat-card">
-                <div style="font-size: 2rem;">{len(df[df['RVOL OK'] == '✅'])}</div>
-                <div>Z RVOL >2</div>
+                <div style="font-size: 2rem;">{len(df)}</div>
+                <div>Po filtrach</div>
             </div>
             """, unsafe_allow_html=True)
         
         with col3:
+            rvol_count = len(df[df['RVOL OK'] == '✅'])
             st.markdown(f"""
             <div class="stat-card">
-                <div style="font-size: 2rem;">{len(df[df['Flow OK'] == '✅'])}</div>
-                <div>Z dobrym przepływem</div>
+                <div style="font-size: 2rem;">{rvol_count}</div>
+                <div>Z RVOL >2</div>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        with col4:
+            flow_count = len(df[df['Flow OK'] == '✅'])
+            st.markdown(f"""
+            <div class="stat-card">
+                <div style="font-size: 2rem;">{flow_count}</div>
+                <div>Z przepływem >0</div>
             </div>
             """, unsafe_allow_html=True)
         
         # Wyniki
         st.subheader("📋 Wyniki skanowania")
         
-        # Sortowanie
         df = df.sort_values('RVOL', ascending=False)
         
-        # Wyświetl
         st.dataframe(
             df,
             use_container_width=True,
@@ -376,47 +495,35 @@ if scan_btn or refresh_btn:
         st.download_button(
             "📥 Pobierz CSV",
             csv,
-            f"nasdaq_results_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+            f"nasdaq_live_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
             "text/csv"
         )
-        
-        # Top 10
-        st.subheader("🏆 Top 10 spółek")
-        cols = st.columns(2)
-        
-        with cols[0]:
-            st.markdown("**Najwyższy RVOL**")
-            st.dataframe(
-                df[['Ticker', 'RVOL', 'CMF', 'Cena']].head(10),
-                use_container_width=True,
-                hide_index=True
-            )
-        
-        with cols[1]:
-            st.markdown("**Najwyższy CMF**")
-            st.dataframe(
-                df.sort_values('CMF', ascending=False)[['Ticker', 'CMF', 'RVOL', 'Cena']].head(10),
-                use_container_width=True,
-                hide_index=True
-            )
         
     else:
         st.warning("Nie znaleziono spółek. Spróbuj rozszerzyć filtry.")
 
 # Instrukcja
-with st.expander("ℹ️ Instrukcja"):
+with st.expander("ℹ️ Jak to działa?"):
     st.markdown("""
-    ### 📋 Jak używać:
+    ### 🔄 Aktualność danych:
     
-    1. **Kliknij "Skanuj"** - pierwsze skanowanie pobierze dane ze stooq.pl (5-10 minut)
-    2. **Kolejne skanowania** - będą błyskawiczne (dane z cache)
-    3. **Kliknij "Odśwież dane"** - jeśli chcesz świeże dane z rynku
+    **Lista spółek:** Pobierana na żywo z NASDAQ Trader przy każdym skanowaniu
+    - ✅ Zawsze aktualna
+    - ✅ Nowe IPO widoczne następnego dnia
+    - ✅ Usunięte spółki automatycznie znikają
     
-    ### 📊 Warunki:
-    - **RVOL > 2 dzisiaj** i w ≥2 z ostatnich 4 dni
-    - **OBV, A/D, CMF > 0** (trend wzrostowy)
+    **Dane cenowe:** Cache'owane przez 24h
+    - ✅ Pierwsze skanowanie: ~15-20 minut
+    - ✅ Kolejne skanowania: błyskawiczne (sekundy)
+    - ✅ Nowe spółki są automatycznie doskanowywane
+    
+    ### 📊 Filtry:
+    - **RVOL > 2** dzisiaj i w ≥2 z ostatnich 4 dni
+    - **OBV, A/D, CMF > 0** (wszystkie trzy)
+    - Filtry cenowe (min/max)
     
     ### 💾 Cache:
-    - Dane trzymane są przez 6 godzin
-    - Plik `nasdaq_cache.csv` w folderze aplikacji
+    - Przechowuje dane przez 24h
+    - Automatycznie aktualizuje nowe spółki
+    - Możesz wymusić odświeżenie przyciskiem "Nowe dane"
     """)
