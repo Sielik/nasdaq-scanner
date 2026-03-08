@@ -68,60 +68,26 @@ st.markdown("""
 def get_all_nasdaq_tickers():
     """
     Pobiera pełną listę wszystkich spółek notowanych na NASDAQ
-    Źródło: Oficjalne dane NASDAQ Trader
     """
-    tickers = []
-    
-    with st.spinner("📡 Pobieranie pełnej listy spółek NASDAQ..."):
-        try:
-            # Źródło 1: NASDAQ Trader (oficjalne)
-            url1 = "ftp://ftp.nasdaqtrader.com/symboldirectory/nasdaqtraded.txt"
-            url2 = "https://www.nasdaqtrader.com/dynamic/symdir/nasdaqtraded.txt"
-            
-            # Próba 1: FTP
-            try:
-                df = pd.read_csv(url1, sep='|')
-                st.success("✅ Pobrano listę z NASDAQ Trader (FTP)")
-            except:
-                # Próba 2: HTTP
-                try:
-                    df = pd.read_csv(url2, sep='|')
-                    st.success("✅ Pobrano listę z NASDAQ Trader (HTTP)")
-                except:
-                    # Próba 3: Backup z GitHub
-                    backup_url = "https://raw.githubusercontent.com/rreichel3/US-Stock-Symbols/main/nasdaq/nasdaq_tickers.txt"
-                    response = requests.get(backup_url)
-                    if response.status_code == 200:
-                        tickers = response.text.strip().split('\n')
-                        st.success(f"✅ Pobrano listę z backupu ({len(tickers)} spółek)")
-                        return [t.strip().upper() for t in tickers if t.strip()]
-                    else:
-                        raise Exception("Wszystkie źródła zawiodły")
-            
-            # Filtruj dane z NASDAQ Trader
-            if 'df' in locals():
-                # Filtruj tylko akcje zwykłe (pomijamy ETFy, fundusze itp.)
-                stocks = df[
-                    (df['ETF'] == 'N') &  # Nie ETF
-                    (df['TEST ISSUE'] == 'N') &  # Nie testowe
-                    (df['FINANCIAL_STATUS'].notna())  # Aktywne spółki
-                ]
-                
-                # Pobierz tickery
-                tickers = stocks['NASDAQ Symbol'].tolist()
-                
-                # Usuń duplikaty i wartości NaN
-                tickers = [t for t in tickers if str(t) != 'nan']
-                tickers = list(set(tickers))
-                
-                st.success(f"✅ Znaleziono {len(tickers)} aktywnych spółek na NASDAQ")
+    try:
+        # Uproszczona wersja - używamy sprawdzonego źródła
+        url = "https://raw.githubusercontent.com/rreichel3/US-Stock-Symbols/main/nasdaq/nasdaq_tickers.txt"
         
-        except Exception as e:
-            st.warning(f"⚠️ Błąd pobierania pełnej listy: {str(e)}")
-            st.info("📋 Używam listy zapasowej 500+ spółek")
-            tickers = get_extended_ticker_list()
-    
-    return sorted(tickers)
+        response = requests.get(url)
+        if response.status_code == 200:
+            tickers = response.text.strip().split('\n')
+            # Filtruj puste linie i oczyszcz
+            tickers = [t.strip().upper() for t in tickers if t.strip() and len(t.strip()) < 6]
+            st.success(f"✅ Pobrano {len(tickers)} spółek z NASDAQ")
+            return tickers
+        else:
+            # Jeśli backup nie działa, użyj rozszerzonej listy
+            st.warning("⚠️ Używam listy zapasowej 500+ spółek")
+            return get_extended_ticker_list()
+            
+    except Exception as e:
+        st.warning(f"⚠️ Błąd: {str(e)} - używam listy zapasowej")
+        return get_extended_ticker_list()
 
 def get_extended_ticker_list():
     """
