@@ -14,8 +14,8 @@ from io import StringIO
 
 # Konfiguracja strony
 st.set_page_config(
-    page_title="NASDAQ Ultra Fast Scanner",
-    page_icon="⚡",
+    page_title="NASDAQ Intelligent Scanner",
+    page_icon="🧠",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -38,43 +38,28 @@ st.markdown("""
         text-align: center;
         box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
     }
-    .success-box {
-        background-color: #d4edda;
-        color: #155724;
-        padding: 1rem;
-        border-radius: 10px;
-        margin: 1rem 0;
-    }
-    .warning-box {
-        background-color: #fff3cd;
-        color: #856404;
-        padding: 1rem;
-        border-radius: 10px;
-        margin: 1rem 0;
-    }
-    .info-box {
-        background-color: #d1ecf1;
-        color: #0c5460;
-        padding: 1rem;
-        border-radius: 10px;
-        margin: 1rem 0;
-    }
-    .stProgress > div > div > div > div {
-        background-color: #00A3E0;
+    .phase-indicator {
+        background-color: #f0f2f6;
+        padding: 0.5rem;
+        border-radius: 5px;
+        margin: 0.5rem 0;
+        text-align: center;
+        font-weight: bold;
     }
 </style>
 """, unsafe_allow_html=True)
 
 # Stałe
-CACHE_FILE = "nasdaq_ultra_cache.gz"
+CACHE_FILE = "nasdaq_intelligent_cache.gz"
 RVOL_THRESHOLD = 2.0
-MAX_WORKERS = 20  # 20 równoległych zapytań!
-TIMEOUT_SECONDS = 5  # Maksymalnie 5 sekund na spółkę
-CACHE_MAX_AGE_HOURS = 12  # Cache ważny 12 godzin
-MAX_STOCKS_IN_CACHE = 2500  # Maksymalna liczba spółek w cache
+PRESCAN_THRESHOLD = 1.5  # Niższy próg dla prescanu
+MAX_WORKERS_PRESCAN = 30  # Więcej wątków dla prescanu
+MAX_WORKERS_DEEP = 20
+TIMEOUT_SECONDS = 3  # Krótszy timeout dla prescanu
+CACHE_MAX_AGE_HOURS = 12
 
 # ============================================
-# FUNKCJE POBIERANIA AKTUALNEJ LISTY SPÓŁEK
+# FUNKCJE POBIERANIA LISTY SPÓŁEK
 # ============================================
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -84,7 +69,7 @@ def get_live_nasdaq_tickers():
     status = st.sidebar.empty()
     status.info("📡 Pobieranie listy spółek...")
     
-    # Źródło 1: NASDAQ Trader (oficjalne)
+    # Źródło 1: NASDAQ Trader
     try:
         url = "https://www.nasdaqtrader.com/dynamic/symdir/nasdaqtraded.txt"
         df = pd.read_csv(url, sep='|')
@@ -105,7 +90,7 @@ def get_live_nasdaq_tickers():
     except Exception as e:
         status.warning("⚠️ Używam backupu...")
     
-    # Źródło 2: GitHub (szybki backup)
+    # Źródło 2: GitHub
     try:
         backup_url = "https://raw.githubusercontent.com/rreichel3/US-Stock-Symbols/main/nasdaq/nasdaq_tickers.txt"
         response = requests.get(backup_url, timeout=3)
@@ -122,30 +107,26 @@ def get_live_nasdaq_tickers():
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_fallback_tickers():
-    """Lista awaryjna 200+ spółek"""
+    """Lista awaryjna"""
     return [
         "AAPL", "MSFT", "GOOGL", "META", "NVDA", "AMD", "INTC", "TSLA", "NFLX",
         "AMZN", "PEP", "COST", "CSCO", "ADBE", "CRM", "ORCL", "IBM", "QCOM",
         "TXN", "AVGO", "AMAT", "MU", "NXPI", "KLAC", "LRCX", "ASML", "SNPS",
         "CDNS", "ADI", "MCHP", "ON", "SWKS", "QRVO", "MPWR", "INTU", "NOW",
         "PANW", "FTNT", "CRWD", "ZS", "OKTA", "DDOG", "MDB", "SNOW", "PLTR",
-        "GILD", "REGN", "VRTX", "MRNA", "ILMN", "BNTX", "ALNY", "BIIB", "AMGN",
-        "SQ", "SOFI", "AFRM", "COIN", "HOOD", "ABNB", "RIVN", "PYPL", "BKNG",
-        "SPOT", "UBER", "DASH", "ZM", "DOCU", "TWLO", "EA", "TTWO", "ROKU",
-        "PINS", "SNAP", "NET", "RBLX", "U", "PATH", "AI", "PLTR", "SNOW"
+        "GILD", "REGN", "VRTX", "MRNA", "ILMN", "BNTX", "ALNY", "BIIB", "AMGN"
     ]
 
 # ============================================
-# FUNKCJE CACHE - Z OGRANICZENIEM ROZMIARU
+# FUNKCJE CACHE - NAPRAWIONE!
 # ============================================
 
-def save_ultra_cache(data, tickers):
-    """Zapisuje cache z ograniczeniem rozmiaru - optymalizacja wydajności"""
+def save_to_cache(data, tickers):
+    """Zapisuje cache"""
     try:
-        # Ogranicz liczbę przechowywanych spółek
-        if len(data) > MAX_STOCKS_IN_CACHE:
-            # Posortuj według wolumenu (ważniejsze spółki) i weź top N
-            data = sorted(data, key=lambda x: x.get('Wolumen', 0), reverse=True)[:MAX_STOCKS_IN_CACHE]
+        # Ogranicz rozmiar
+        if len(data) > 2500:
+            data = sorted(data, key=lambda x: x.get('Wolumen', 0), reverse=True)[:2500]
         
         cache = {
             'timestamp': datetime.now(),
@@ -153,7 +134,6 @@ def save_ultra_cache(data, tickers):
             'data': data
         }
         
-        # Kompresja dla szybkości
         json_str = json.dumps(cache, default=str)
         compressed = gzip.compress(json_str.encode())
         
@@ -165,8 +145,8 @@ def save_ultra_cache(data, tickers):
         st.sidebar.error(f"Błąd zapisu cache: {e}")
         return False
 
-def load_ultra_cache():
-    """Wczytuje skompresowany cache - optymalizacja wydajności"""
+def load_from_cache():
+    """Wczytuje cache"""
     if not os.path.exists(CACHE_FILE):
         return None
     
@@ -176,76 +156,91 @@ def load_ultra_cache():
         
         json_str = gzip.decompress(compressed).decode()
         cache = json.loads(json_str)
-        
-        # Konwersja timestamp
         cache['timestamp'] = datetime.fromisoformat(cache['timestamp'])
-        
         return cache
     except Exception as e:
         st.sidebar.warning(f"Błąd odczytu cache: {e}")
         return None
 
 def clear_cache():
-    """Czyści plik cache"""
+    """Czyści cache bez restartu!"""
     if os.path.exists(CACHE_FILE):
         os.remove(CACHE_FILE)
         return True
     return False
 
-def get_cache_info():
-    """Zwraca informacje o cache"""
-    if not os.path.exists(CACHE_FILE):
-        return None
-    
-    try:
-        size_kb = os.path.getsize(CACHE_FILE) / 1024
-        cache = load_ultra_cache()
-        if cache:
-            age = datetime.now() - cache['timestamp']
-            return {
-                'size': f"{size_kb:.1f} KB",
-                'age': f"{age.seconds//3600}h {(age.seconds//60)%60}m",
-                'stocks': len(cache.get('data', [])),
-                'timestamp': cache['timestamp']
-            }
-    except:
-        pass
-    return None
-
 # ============================================
-# FUNKCJE POBIERANIA DANYCH - ZOPTYMALIZOWANE
+# FUNKCJE SKANOWANIA - DWUETAPOWE
 # ============================================
 
-def fetch_single_stock(ticker):
-    """Pobiera pojedynczą spółkę z timeout'em"""
+def quick_rvol_check(ticker):
+    """
+    FAZA 1: Bardzo szybkie sprawdzenie RVOL
+    Tylko 10 dni danych, prosty timeout
+    """
     try:
         url = f"https://stooq.pl/q/d/l/?s={ticker.lower()}.us&i=d"
+        df = pd.read_csv(url, nrows=10)
         
-        # Szybkie pobieranie z timeout'em
-        response = requests.get(url, timeout=TIMEOUT_SECONDS)
+        if df.empty or len(df) < 5:
+            return 0
         
-        if response.status_code != 200:
-            return None
+        # Uproszczone RVOL
+        volumes = df['Wolumen'].values
+        avg_vol = np.mean(volumes)
+        today_vol = volumes[-1]
         
-        df = pd.read_csv(StringIO(response.text))
+        return today_vol / avg_vol if avg_vol > 0 else 0
+    except:
+        return 0
+
+def prescan_all_tickers(tickers):
+    """
+    FAZA 1: Prescan wszystkich spółek
+    Znajduje obiecujące tickery (RVOL > PRESCAN_THRESHOLD)
+    """
+    st.markdown('<div class="phase-indicator">🔍 FAZA 1: Prescan wszystkich spółek</div>', 
+                unsafe_allow_html=True)
+    
+    promising = []
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS_PRESCAN) as executor:
+        futures = {executor.submit(quick_rvol_check, t): t for t in tickers}
+        
+        for i, future in enumerate(as_completed(futures)):
+            ticker = futures[future]
+            try:
+                rvol = future.result(timeout=2)
+                if rvol > PRESCAN_THRESHOLD:
+                    promising.append(ticker)
+            except:
+                pass
+            
+            if i % 50 == 0:
+                progress_bar.progress(i / len(tickers))
+                status_text.text(f"Prescan: {i}/{len(tickers)} | Znaleziono: {len(promising)}")
+    
+    progress_bar.empty()
+    status_text.empty()
+    
+    st.success(f"✅ FAZA 1: Znaleziono {len(promising)} obiecujących spółek")
+    return promising
+
+def deep_scan_ticker(ticker):
+    """
+    FAZA 2: Głębokie skanowanie pojedynczej spółki
+    Pełne dane, wszystkie wskaźniki
+    """
+    try:
+        url = f"https://stooq.pl/q/d/l/?s={ticker.lower()}.us&i=d"
+        df = pd.read_csv(url)
         
         if df.empty or len(df) < 25:
             return None
         
         df.columns = ['Date', 'Open', 'High', 'Low', 'Close', 'Volume']
-        df['Ticker'] = ticker
-        
-        return df
-        
-    except Exception as e:
-        return None
-
-def calculate_fast_indicators(df):
-    """Szybkie obliczanie wskaźników - tylko potrzebne dane"""
-    try:
-        if df is None or len(df) < 25:
-            return None
-        
         df = df.sort_values('Date').reset_index(drop=True)
         
         # RVOL
@@ -264,187 +259,158 @@ def calculate_fast_indicators(df):
         
         rvol_ok = (today_rvol > RVOL_THRESHOLD) and (days_over_2 >= 2)
         
-        # OBV (trend)
-        obv_trend = 1 if df['Close'].iloc[-1] > df['Close'].iloc[-20] else -1
+        if not rvol_ok:  # Jeśli nie spełnia RVOL, nie licz reszty
+            return None
         
-        # A/D (ostatni dzień)
-        high, low, close = df['High'].iloc[-1], df['Low'].iloc[-1], df['Close'].iloc[-1]
-        if high != low:
-            clv = ((close - low) - (high - close)) / (high - low)
-        else:
-            clv = 0
-        ad_trend = 1 if clv > 0 else -1
+        # OBV
+        obv = [0]
+        for i in range(1, len(df)):
+            if df['Close'].iloc[i] > df['Close'].iloc[i-1]:
+                obv.append(obv[-1] + df['Volume'].iloc[i])
+            elif df['Close'].iloc[i] < df['Close'].iloc[i-1]:
+                obv.append(obv[-1] - df['Volume'].iloc[i])
+            else:
+                obv.append(obv[-1])
         
-        # CMF (uproszczony)
-        cmf = (df['Close'].iloc[-1] / df['Close'].iloc[-20] - 1) * 100 if len(df) >= 20 else 0
+        obv_slope = np.polyfit(range(20), obv[-20:], 1)[0] if len(obv) >= 20 else 0
+        obv_ok = obv_slope > 0
         
-        flow_ok = (obv_trend > 0 and ad_trend > 0 and cmf > 0)
+        # A/D
+        ad_line = [0]
+        for i in range(1, len(df)):
+            high, low, close = df['High'].iloc[i], df['Low'].iloc[i], df['Close'].iloc[i]
+            if high != low:
+                clv = ((close - low) - (high - close)) / (high - low)
+            else:
+                clv = 0
+            ad_line.append(ad_line[-1] + (clv * df['Volume'].iloc[i]))
+        
+        ad_slope = np.polyfit(range(20), ad_line[-20:], 1)[0] if len(ad_line) >= 20 else 0
+        ad_ok = ad_slope > 0
+        
+        # CMF
+        def calculate_cmf(data, period=20):
+            if len(data) < period:
+                return 0
+            
+            mfv = []
+            for i in range(-period, 0):
+                high, low, close = data['High'].iloc[i], data['Low'].iloc[i], data['Close'].iloc[i]
+                if high != low:
+                    clv = ((close - low) - (high - close)) / (high - low)
+                else:
+                    clv = 0
+                mfv.append(clv * data['Volume'].iloc[i])
+            
+            volume_sum = data['Volume'].iloc[-period:].sum()
+            return sum(mfv) / volume_sum if volume_sum > 0 else 0
+        
+        cmf = calculate_cmf(df, 20)
+        cmf_ok = cmf > 0
         
         # Zmiany
         change_1d = ((df['Close'].iloc[-1] / df['Close'].iloc[-2] - 1) * 100) if len(df) >= 2 else 0
+        change_5d = ((df['Close'].iloc[-1] / df['Close'].iloc[-5] - 1) * 100) if len(df) >= 5 else 0
         
         return {
-            'Ticker': df['Ticker'].iloc[0],
+            'Ticker': ticker,
             'Cena': round(df['Close'].iloc[-1], 2),
             'Wolumen': int(df['Volume'].iloc[-1]),
             'RVOL': round(today_rvol, 2),
             'Dni>2': days_over_2,
             'RVOL OK': '✅' if rvol_ok else '❌',
-            'Flow OK': '✅' if flow_ok else '❌',
-            'CMF': round(cmf, 2),
+            'OBV': '📈' if obv_ok else '📉',
+            'A/D': '📈' if ad_ok else '📉',
+            'CMF': round(cmf, 3),
+            'Flow OK': '✅' if (obv_ok and ad_ok and cmf_ok) else '❌',
             'Zmiana 1d': round(change_1d, 2),
+            'Zmiana 5d': round(change_5d, 2),
             'Data': datetime.now().strftime('%H:%M')
         }
         
     except Exception as e:
         return None
 
-# ============================================
-# GŁÓWNA FUNKCJA - SUPERSZYBKIE SKANOWANIE
-# ============================================
-
-def ultra_fast_scan(force_refresh=False):
+def deep_scan_promising(promising_tickers):
     """
-    Najszybsze możliwe skanowanie - równoległe + zoptymalizowany cache
+    FAZA 2: Głębokie skanowanie obiecujących spółek
     """
-    
-    # Krok 1: Lista spółek (zawsze świeża)
-    with st.spinner("📡 Pobieranie listy spółek..."):
-        current_tickers = get_live_nasdaq_tickers()
-    
-    # Krok 2: Sprawdź cache
-    cached = load_ultra_cache()
-    
-    if cached and not force_refresh:
-        cache_age = datetime.now() - cached['timestamp']
-        cache_hours = cache_age.total_seconds() / 3600
-        
-        if cache_hours < CACHE_MAX_AGE_HOURS:
-            cached_tickers = set(cached['tickers'])
-            current_set = set(current_tickers)
-            
-            new_tickers = current_set - cached_tickers
-            removed_tickers = cached_tickers - current_set
-            
-            # Użyj cache dla starych
-            all_results = [d for d in cached['data'] 
-                          if d['Ticker'] in cached_tickers - removed_tickers]
-            
-            # Skanuj tylko nowe (równolegle!)
-            if new_tickers:
-                new_list = list(new_tickers)
-                st.warning(f"🆕 Skanowanie {len(new_list)} nowych spółek...")
-                
-                new_results = []
-                with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-                    futures = {
-                        executor.submit(fetch_single_stock, t): t 
-                        for t in new_list
-                    }
-                    
-                    progress = st.progress(0)
-                    for i, future in enumerate(as_completed(futures)):
-                        df = future.result()
-                        if df:
-                            result = calculate_fast_indicators(df)
-                            if result:
-                                new_results.append(result)
-                        progress.progress((i + 1) / len(new_list))
-                    
-                    progress.empty()
-                
-                all_results.extend(new_results)
-                
-                # Zapisz zaktualizowany cache
-                save_ultra_cache(all_results, current_tickers)
-            
-            return all_results, current_tickers
-    
-    # Krok 3: Pierwsze skanowanie - RÓWNOLEGLE!
-    st.warning(f"⚡ Pierwsze skanowanie {len(current_tickers)} spółek (zajmie ~3-4 minuty)...")
+    st.markdown('<div class="phase-indicator">🔬 FAZA 2: Głębokie skanowanie</div>', 
+                unsafe_allow_html=True)
     
     results = []
-    failed = []
+    progress_bar = st.progress(0)
+    status_text = st.empty()
     
-    # Równoległe skanowanie
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        futures = {
-            executor.submit(fetch_single_stock, t): t 
-            for t in current_tickers
-        }
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS_DEEP) as executor:
+        futures = {executor.submit(deep_scan_ticker, t): t for t in promising_tickers}
         
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-        completed = 0
-        total = len(current_tickers)
-        
-        start_time = time.time()
-        
-        for future in as_completed(futures):
-            ticker = futures[future]
-            try:
-                df = future.result()
-                if df:
-                    result = calculate_fast_indicators(df)
-                    if result:
-                        results.append(result)
-                else:
-                    failed.append(ticker)
-            except:
-                failed.append(ticker)
+        for i, future in enumerate(as_completed(futures)):
+            result = future.result()
+            if result:
+                results.append(result)
             
-            completed += 1
-            
-            # Aktualizuj co 50 spółek
-            if completed % 50 == 0:
-                elapsed = time.time() - start_time
-                rate = completed / elapsed if elapsed > 0 else 0
-                remaining = (total - completed) / rate if rate > 0 else 0
-                
-                progress_bar.progress(completed / total)
-                status_text.text(
-                    f"⚡ {completed}/{total} | "
-                    f"Szybkość: {rate:.1f}/s | "
-                    f"Pozostało: {int(remaining//60)}m {int(remaining%60)}s | "
-                    f"Znaleziono: {len(results)}"
-                )
-        
-        progress_bar.empty()
-        status_text.empty()
+            if i % 5 == 0:
+                progress_bar.progress((i + 1) / len(promising_tickers))
+                status_text.text(f"Skanowanie: {i+1}/{len(promising_tickers)} | Znaleziono: {len(results)}")
     
-    # Zapisz cache
-    save_ultra_cache(results, current_tickers)
+    progress_bar.empty()
+    status_text.empty()
     
-    return results, current_tickers
+    return results
+
+def intelligent_scan(force_refresh=False):
+    """
+    GŁÓWNA FUNKCJA - dwuetapowe inteligentne skanowanie
+    """
+    # Krok 0: Lista spółek
+    with st.spinner("📡 Pobieranie listy spółek..."):
+        all_tickers = get_live_nasdaq_tickers()
+    
+    # Sprawdź cache
+    if not force_refresh:
+        cached = load_from_cache()
+        if cached:
+            cache_age = datetime.now() - cached['timestamp']
+            if cache_age.total_seconds() / 3600 < CACHE_MAX_AGE_HOURS:
+                st.info(f"📦 Używam cache sprzed {cache_age.seconds//60} minut")
+                return cached['data'], all_tickers
+    
+    # FAZA 1: Prescan wszystkich spółek
+    promising = prescan_all_tickers(all_tickers)
+    
+    if not promising:
+        st.warning("❌ Nie znaleziono obiecujących spółek")
+        return [], all_tickers
+    
+    # FAZA 2: Głębokie skanowanie
+    results = deep_scan_promising(promising)
+    
+    # Zapisz do cache
+    save_to_cache(results, all_tickers)
+    
+    return results, all_tickers
 
 # ============================================
 # INTERFEJS UŻYTKOWNIKA
 # ============================================
 
-st.markdown('<h1 class="main-header">⚡ NASDAQ Ultra Fast Scanner</h1>', unsafe_allow_html=True)
+st.markdown('<h1 class="main-header">🧠 NASDAQ Intelligent Scanner</h1>', unsafe_allow_html=True)
 
 # Sidebar
 with st.sidebar:
     st.image("https://img.icons8.com/color/96/000000/stock-exchange.png", width=80)
-    st.header("🔍 Filtry wyszukiwania")
+    st.header("🔍 Filtry")
     
     st.markdown("---")
     
-    # Informacje o wydajności
-    st.subheader("📊 Wydajność")
-    col1, col2 = st.columns(2)
-    with col1:
-        st.info(f"⚡ {MAX_WORKERS} wątków")
-    with col2:
-        st.info(f"⏱️ {TIMEOUT_SECONDS}s timeout")
-    
-    # Informacje o cache
-    cache_info = get_cache_info()
-    if cache_info:
-        st.subheader("💾 Cache")
-        st.text(f"Rozmiar: {cache_info['size']}")
-        st.text(f"Wiek: {cache_info['age']}")
-        st.text(f"Spółki: {cache_info['stocks']}")
+    # Informacje o trybie
+    st.subheader("🧠 Tryb inteligentny")
+    st.info("""
+    **Dwuetapowe skanowanie:**
+    1. Prescan 3500 spółek (30s)
+    2. Głębokie skanowanie obiecujących (3-4 min)
+    """)
     
     st.markdown("---")
     
@@ -464,35 +430,43 @@ with st.sidebar:
     # Przyciski
     col1, col2 = st.columns(2)
     with col1:
-        scan_btn = st.button("⚡ Skanuj", type="primary", use_container_width=True)
+        scan_btn = st.button("🧠 Skanuj inteligentnie", type="primary", use_container_width=True)
     with col2:
-        refresh_btn = st.button("🔄 Nowe dane", use_container_width=True)
+        refresh_btn = st.button("🔄 Świeże dane", use_container_width=True)
     
-    # Przycisk czyszczenia cache
     st.markdown("---")
+    
+    # Konserwacja - NAPRAWIONE!
     st.subheader("🧹 Konserwacja")
     
-    if st.button("🧹 Wyczyść cache i uruchom ponownie", use_container_width=True):
+    # Informacja o cache
+    if os.path.exists(CACHE_FILE):
+        size_kb = os.path.getsize(CACHE_FILE) / 1024
+        st.caption(f"📦 Cache: {size_kb:.1f} KB")
+    
+    # Przycisk czyszczenia BEZ RESTARTU!
+    if st.button("🧹 Wyczyść cache", use_container_width=True):
         if clear_cache():
             st.success("✅ Cache wyczyszczony! Następne skanowanie będzie świeże.")
             time.sleep(1)
-            st.rerun()
         else:
             st.info("ℹ️ Cache był już pusty")
             time.sleep(1)
-            st.rerun()
 
 # Główna logika
 if scan_btn or refresh_btn:
     force_refresh = refresh_btn
     
-    with st.spinner("Inicjowanie superszybkiego skanowania..."):
-        results, current_tickers = ultra_fast_scan(force_refresh)
+    if force_refresh:
+        clear_cache()  # Wymuś świeże dane
+    
+    with st.spinner("Inicjowanie inteligentnego skanowania..."):
+        results, all_tickers = intelligent_scan(force_refresh)
     
     if results:
         df = pd.DataFrame(results)
         
-        # Zastosuj filtry
+        # Filtry
         if min_price > 0:
             df = df[df['Cena'] >= min_price]
         if max_price < 10000:
@@ -509,7 +483,7 @@ if scan_btn or refresh_btn:
         with col1:
             st.markdown(f"""
             <div class="stat-card">
-                <div style="font-size: 2rem;">{len(current_tickers)}</div>
+                <div style="font-size: 2rem;">{len(all_tickers)}</div>
                 <div>Spółek na NASDAQ</div>
             </div>
             """, unsafe_allow_html=True)
@@ -543,10 +517,8 @@ if scan_btn or refresh_btn:
         # Wyniki
         st.subheader("📋 Wyniki skanowania")
         
-        # Sortuj według RVOL
         df = df.sort_values('RVOL', ascending=False)
         
-        # Wyświetl tabelę
         st.dataframe(
             df,
             use_container_width=True,
@@ -554,19 +526,19 @@ if scan_btn or refresh_btn:
             column_config={
                 "Cena": st.column_config.NumberColumn(format="$%.2f"),
                 "Wolumen": st.column_config.NumberColumn(format="%d"),
-                "CMF": st.column_config.NumberColumn(format="%.1f"),
-                "Zmiana 1d": st.column_config.NumberColumn(format="%.1f%%")
+                "CMF": st.column_config.NumberColumn(format="%.3f"),
+                "Zmiana 1d": st.column_config.NumberColumn(format="%.1f%%"),
+                "Zmiana 5d": st.column_config.NumberColumn(format="%.1f%%")
             }
         )
         
-        # Eksport do CSV
+        # Eksport
         csv = df.to_csv(index=False)
         st.download_button(
             "📥 Pobierz CSV",
             csv,
-            f"nasdaq_ultra_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-            "text/csv",
-            use_container_width=True
+            f"nasdaq_intelligent_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+            "text/csv"
         )
         
         # Top 10
@@ -591,32 +563,26 @@ if scan_btn or refresh_btn:
         st.warning("Nie znaleziono spółek spełniających kryteria. Spróbuj rozszerzyć filtry.")
 
 # Instrukcja
-with st.expander("ℹ️ Instrukcja obsługi", expanded=False):
+with st.expander("ℹ️ Jak działa inteligentne skanowanie?", expanded=False):
     st.markdown("""
-    ### ⚡ Superszybkie skanowanie NASDAQ
+    ### 🧠 Dwuetapowe skanowanie:
     
-    **Jak to działa:**
-    - 20 wątków równolegle (zamiast 1)
-    - Timeout 5 sekund (nie czeka na martwe spółki)
-    - Kompresowany cache (błyskawiczny odczyt)
-    - Automatyczne czyszczenie starego cache
+    **FAZA 1: Prescan (30 sekund)**
+    - Szybkie sprawdzenie wszystkich 3500 spółek
+    - Tylko RVOL, uproszczone obliczenia
+    - Próg: RVOL > 1.5
     
-    **Filtry:**
-    - **RVOL > 2** dzisiaj i w ≥2 z ostatnich 4 dni roboczych
-    - **OBV, A/D, CMF > 0** (wszystkie trzy wskaźniki)
-    - Filtry cenowe (min/max)
+    **FAZA 2: Głębokie skanowanie (3-4 minuty)**
+    - Tylko obiecujące spółki z fazy 1
+    - Pełne obliczenia (RVOL, OBV, A/D, CMF)
+    - Dokładne wskaźniki techniczne
     
-    **Czasy skanowania:**
-    - Pierwsze skanowanie: ~3-4 minuty
-    - Kolejne skanowania: ~30-60 sekund
-    - Tylko nowe spółki: ~10-20 sekund
+    **Korzyści:**
+    - ✅ Sprawdza WSZYSTKIE spółki
+    - ✅ Szybciej niż pełne skanowanie
+    - ✅ Nie pomija małych spółek z potencjałem
     
     **Konserwacja:**
-    - Jeśli aplikacja zwolni, kliknij "Wyczyść cache"
-    - Cache jest automatycznie ograniczany do {MAX_STOCKS_IN_CACHE} spółek
-    - Dane w cache są ważne {CACHE_MAX_AGE_HOURS} godzin
-    
-    **Źródła danych:**
-    - Lista spółek: NASDAQ Trader (oficjalne, na żywo)
-    - Dane cenowe: stooq.pl (darmowe, bez limitów)
-    """.format(MAX_STOCKS_IN_CACHE=MAX_STOCKS_IN_CACHE, CACHE_MAX_AGE_HOURS=CACHE_MAX_AGE_HOURS))
+    - Przycisk "Wyczyść cache" usuwa dane BEZ restartu
+    - Następne skanowanie pobierze świeże dane
+    """)
