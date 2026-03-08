@@ -1,6 +1,59 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import requests
+from datetime import datetime
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from io import StringIO
+
+st.set_page_config(page_title="NASDAQ TEST", layout="wide")
+
+st.title("🧪 NASDAQ TEST - czy działa?")
+
+# PROSTE TESTY - WIDOCZNE OD RAZU!
+st.subheader("🔍 TESTY POŁĄCZENIA")
+
+col1, col2 = st.columns(2)
+
+with col1:
+    if st.button("1. TEST - RVOL dla AAPL"):
+        try:
+            url = "https://stooq.pl/q/d/l/?s=aapl.us&i=d"
+            response = requests.get(url, timeout=5)
+            df = pd.read_csv(StringIO(response.text))
+            
+            if not df.empty:
+                wolumen = df['Wolumen'].values[-5:]
+                avg = wolumen.mean()
+                today = wolumen[-1]
+                rvol = today / avg
+                
+                st.success(f"✅ Połączenie działa!")
+                st.write(f"Średni wolumen (5d): {avg:.0f}")
+                st.write(f"Dzisiejszy wolumen: {today:.0f}")
+                st.write(f"RVOL: {rvol:.2f}")
+            else:
+                st.error("Brak danych")
+        except Exception as e:
+            st.error(f"Błąd: {e}")
+
+with col2:
+    if st.button("2. TEST - połączenie"):
+        try:
+            r = requests.get("https://stooq.pl", timeout=5)
+            if r.status_code == 200:
+                st.success("✅ Stooq.pl odpowiada")
+            else:
+                st.error(f"Błąd {r.status_code}")
+        except:
+            st.error("❌ Brak połączenia")
+
+# Reszta kodu będzie poniżej
+st.markdown("---")
+import streamlit as st
+import pandas as pd
+import numpy as np
 import plotly.express as px
 from datetime import datetime, timedelta
 import time
@@ -46,20 +99,142 @@ st.markdown("""
         text-align: center;
         font-weight: bold;
     }
+    .test-box {
+        background-color: #e1f5fe;
+        padding: 1rem;
+        border-radius: 10px;
+        margin: 1rem 0;
+        border-left: 4px solid #03a9f4;
+    }
 </style>
 """, unsafe_allow_html=True)
 
 # Stałe
 CACHE_FILE = "nasdaq_intelligent_cache.gz"
 RVOL_THRESHOLD = 2.0
-PRESCAN_THRESHOLD = 1.5  # Niższy próg dla prescanu
-MAX_WORKERS_PRESCAN = 30  # Więcej wątków dla prescanu
+PRESCAN_THRESHOLD = 1.5  # Sztywny próg 1.5
+MAX_WORKERS_PRESCAN = 30
 MAX_WORKERS_DEEP = 20
-TIMEOUT_SECONDS = 3  # Krótszy timeout dla prescanu
+TIMEOUT_SECONDS = 5
 CACHE_MAX_AGE_HOURS = 12
 
 # ============================================
-# FUNKCJE POBIERANIA LISTY SPÓŁEK
+# FUNKCJE POMOCNICZE I TESTY
+# ============================================
+
+def quick_rvol_check(ticker):
+    """
+    Szybkie sprawdzenie RVOL
+    """
+    try:
+        url = f"https://stooq.pl/q/d/l/?s={ticker.lower()}.us&i=d"
+        
+        response = requests.get(url, timeout=TIMEOUT_SECONDS)
+        
+        if response.status_code != 200:
+            return 0
+        
+        df = pd.read_csv(StringIO(response.text))
+        
+        if df.empty or len(df) < 5:
+            return 0
+        
+        # Znajdź kolumnę z wolumenem
+        volume_col = None
+        possible_names = ['Wolumen', 'Volume', 'Wol', 'Vol']
+        
+        for col in df.columns:
+            if col in possible_names:
+                volume_col = col
+                break
+        
+        if volume_col is None and len(df.columns) >= 6:
+            volume_col = df.columns[5]
+        
+        if volume_col is None:
+            return 0
+        
+        volumes = df[volume_col].values
+        volumes = pd.to_numeric(volumes, errors='coerce')
+        volumes = volumes[~np.isnan(volumes)]
+        
+        if len(volumes) < 5:
+            return 0
+        
+        avg_vol = np.mean(volumes)
+        today_vol = volumes[-1]
+        
+        return today_vol / avg_vol if avg_vol > 0 else 0
+        
+    except Exception as e:
+        return 0
+
+# ============================================
+# TESTY - WIDOCZNE NA GÓRZE STRONY
+# ============================================
+
+st.markdown('<h1 class="main-header">🧠 NASDAQ Intelligent Scanner</h1>', unsafe_allow_html=True)
+
+with st.expander("🔧 NARZĘDZIA TESTOWE - kliknij jeśli nie ma wyników", expanded=True):
+    st.markdown('<div class="test-box">', unsafe_allow_html=True)
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        if st.button("🔍 TEST 1 - RVOL dla AAPL"):
+            with st.spinner("Sprawdzam AAPL..."):
+                rvol = quick_rvol_check("AAPL")
+                if rvol > 0:
+                    st.success(f"✅ RVOL dla AAPL = {rvol:.2f}")
+                    if rvol > PRESCAN_THRESHOLD:
+                        st.info(f"➡️ To powyżej progu {PRESCAN_THRESHOLD}")
+                    else:
+                        st.warning(f"⬇️ To poniżej progu {PRESCAN_THRESHOLD}")
+                else:
+                    st.error("❌ Nie udało się pobrać danych")
+    
+    with col2:
+        if st.button("🌐 TEST 2 - połączenie ze stooq.pl"):
+            with st.spinner("Testuję połączenie..."):
+                try:
+                    response = requests.get("https://stooq.pl/q/d/l/?s=aapl.us&i=d", timeout=5)
+                    if response.status_code == 200:
+                        st.success("✅ Połączenie działa!")
+                        st.text(f"Otrzymano {len(response.text)} znaków")
+                    else:
+                        st.error(f"❌ Błąd HTTP: {response.status_code}")
+                except Exception as e:
+                    st.error(f"❌ Błąd: {e}")
+    
+    with col3:
+        if st.button("📊 TEST 3 - sprawdź 10 spółek"):
+            with st.spinner("Sprawdzam popularne spółki..."):
+                test_tickers = ["AAPL", "MSFT", "GOOGL", "META", "NVDA", "TSLA", "AMD", "INTC", "NFLX", "AMZN"]
+                results = []
+                progress = st.progress(0)
+                
+                for i, t in enumerate(test_tickers):
+                    rvol = quick_rvol_check(t)
+                    results.append({"Ticker": t, "RVOL": round(rvol, 2)})
+                    progress.progress((i + 1) / len(test_tickers))
+                    time.sleep(0.3)
+                
+                progress.empty()
+                df_test = pd.DataFrame(results)
+                df_test = df_test.sort_values('RVOL', ascending=False)
+                
+                st.dataframe(df_test, use_container_width=True)
+                
+                avg_rvol = df_test['RVOL'].mean()
+                above_threshold = len(df_test[df_test['RVOL'] > PRESCAN_THRESHOLD])
+                
+                st.info(f"Średni RVOL: {avg_rvol:.2f}")
+                st.info(f"Powyżej progu {PRESCAN_THRESHOLD}: {above_threshold} spółek")
+    
+    st.markdown('</div>', unsafe_allow_html=True)
+
+# ============================================
+# RESZTA FUNKCJI (BEZ ZMIAN)
 # ============================================
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -88,7 +263,7 @@ def get_live_nasdaq_tickers():
         return tickers
         
     except Exception as e:
-        status.warning("⚠️ Używam backupu...")
+        status.warning("⚠️ NASDAQ Trader niedostępny, używam backupu...")
     
     # Źródło 2: GitHub
     try:
@@ -117,14 +292,9 @@ def get_fallback_tickers():
         "GILD", "REGN", "VRTX", "MRNA", "ILMN", "BNTX", "ALNY", "BIIB", "AMGN"
     ]
 
-# ============================================
-# FUNKCJE CACHE - NAPRAWIONE!
-# ============================================
-
 def save_to_cache(data, tickers):
     """Zapisuje cache"""
     try:
-        # Ogranicz rozmiar
         if len(data) > 2500:
             data = sorted(data, key=lambda x: x.get('Wolumen', 0), reverse=True)[:2500]
         
@@ -163,46 +333,21 @@ def load_from_cache():
         return None
 
 def clear_cache():
-    """Czyści cache bez restartu!"""
+    """Czyści cache bez restartu"""
     if os.path.exists(CACHE_FILE):
         os.remove(CACHE_FILE)
         return True
     return False
 
-# ============================================
-# FUNKCJE SKANOWANIA - DWUETAPOWE
-# ============================================
-
-def quick_rvol_check(ticker):
-    """
-    FAZA 1: Bardzo szybkie sprawdzenie RVOL
-    Tylko 10 dni danych, prosty timeout
-    """
-    try:
-        url = f"https://stooq.pl/q/d/l/?s={ticker.lower()}.us&i=d"
-        df = pd.read_csv(url, nrows=10)
-        
-        if df.empty or len(df) < 5:
-            return 0
-        
-        # Uproszczone RVOL
-        volumes = df['Wolumen'].values
-        avg_vol = np.mean(volumes)
-        today_vol = volumes[-1]
-        
-        return today_vol / avg_vol if avg_vol > 0 else 0
-    except:
-        return 0
-
 def prescan_all_tickers(tickers):
     """
-    FAZA 1: Prescan wszystkich spółek
-    Znajduje obiecujące tickery (RVOL > PRESCAN_THRESHOLD)
+    FAZA 1: Prescan wszystkich spółek - zwraca tickery i dane
     """
-    st.markdown('<div class="phase-indicator">🔍 FAZA 1: Prescan wszystkich spółek</div>', 
+    st.markdown('<div class="phase-indicator">🔍 FAZA 1: Prescan wszystkich spółek (RVOL > 1.5)</div>', 
                 unsafe_allow_html=True)
     
-    promising = []
+    promising_tickers = []
+    promising_data = []
     progress_bar = st.progress(0)
     status_text = st.empty()
     
@@ -212,26 +357,29 @@ def prescan_all_tickers(tickers):
         for i, future in enumerate(as_completed(futures)):
             ticker = futures[future]
             try:
-                rvol = future.result(timeout=2)
+                rvol = future.result(timeout=3)
                 if rvol > PRESCAN_THRESHOLD:
-                    promising.append(ticker)
+                    promising_tickers.append(ticker)
+                    promising_data.append({
+                        'Ticker': ticker,
+                        'RVOL (prescan)': round(rvol, 2),
+                        'Status': 'Przechodzi do fazy 2'
+                    })
             except:
                 pass
             
             if i % 50 == 0:
                 progress_bar.progress(i / len(tickers))
-                status_text.text(f"Prescan: {i}/{len(tickers)} | Znaleziono: {len(promising)}")
+                status_text.text(f"Prescan: {i}/{len(tickers)} | Znaleziono: {len(promising_tickers)}")
     
     progress_bar.empty()
     status_text.empty()
     
-    st.success(f"✅ FAZA 1: Znaleziono {len(promising)} obiecujących spółek")
-    return promising
+    return promising_tickers, promising_data
 
 def deep_scan_ticker(ticker):
     """
     FAZA 2: Głębokie skanowanie pojedynczej spółki
-    Pełne dane, wszystkie wskaźniki
     """
     try:
         url = f"https://stooq.pl/q/d/l/?s={ticker.lower()}.us&i=d"
@@ -258,9 +406,6 @@ def deep_scan_ticker(ticker):
         days_over_2 = sum(1 for r in last_4_rvol if r > RVOL_THRESHOLD)
         
         rvol_ok = (today_rvol > RVOL_THRESHOLD) and (days_over_2 >= 2)
-        
-        if not rvol_ok:  # Jeśli nie spełnia RVOL, nie licz reszty
-            return None
         
         # OBV
         obv = [0]
@@ -308,6 +453,9 @@ def deep_scan_ticker(ticker):
         cmf = calculate_cmf(df, 20)
         cmf_ok = cmf > 0
         
+        # Flow OK - wszystkie 3 > 0
+        flow_ok = obv_ok and ad_ok and cmf_ok
+        
         # Zmiany
         change_1d = ((df['Close'].iloc[-1] / df['Close'].iloc[-2] - 1) * 100) if len(df) >= 2 else 0
         change_5d = ((df['Close'].iloc[-1] / df['Close'].iloc[-5] - 1) * 100) if len(df) >= 5 else 0
@@ -319,10 +467,10 @@ def deep_scan_ticker(ticker):
             'RVOL': round(today_rvol, 2),
             'Dni>2': days_over_2,
             'RVOL OK': '✅' if rvol_ok else '❌',
-            'OBV': '📈' if obv_ok else '📉',
-            'A/D': '📈' if ad_ok else '📉',
+            'OBV': round(obv_slope, 2),
+            'A/D': round(ad_slope, 2),
             'CMF': round(cmf, 3),
-            'Flow OK': '✅' if (obv_ok and ad_ok and cmf_ok) else '❌',
+            'Flow OK': '✅' if flow_ok else '❌',
             'Zmiana 1d': round(change_1d, 2),
             'Zmiana 5d': round(change_5d, 2),
             'Data': datetime.now().strftime('%H:%M')
@@ -337,6 +485,10 @@ def deep_scan_promising(promising_tickers):
     """
     st.markdown('<div class="phase-indicator">🔬 FAZA 2: Głębokie skanowanie</div>', 
                 unsafe_allow_html=True)
+    
+    if not promising_tickers:
+        st.warning("Brak spółek do głębokiego skanowania")
+        return []
     
     results = []
     progress_bar = st.progress(0)
@@ -374,43 +526,33 @@ def intelligent_scan(force_refresh=False):
             cache_age = datetime.now() - cached['timestamp']
             if cache_age.total_seconds() / 3600 < CACHE_MAX_AGE_HOURS:
                 st.info(f"📦 Używam cache sprzed {cache_age.seconds//60} minut")
-                return cached['data'], all_tickers
+                return cached['data'], [], all_tickers
     
-    # FAZA 1: Prescan wszystkich spółek
-    promising = prescan_all_tickers(all_tickers)
-    
-    if not promising:
-        st.warning("❌ Nie znaleziono obiecujących spółek")
-        return [], all_tickers
+    # FAZA 1: Prescan
+    promising_tickers, promising_data = prescan_all_tickers(all_tickers)
     
     # FAZA 2: Głębokie skanowanie
-    results = deep_scan_promising(promising)
+    deep_results = deep_scan_promising(promising_tickers)
     
-    # Zapisz do cache
-    save_to_cache(results, all_tickers)
+    # Zapisz do cache (tylko głębokie wyniki)
+    save_to_cache(deep_results, all_tickers)
     
-    return results, all_tickers
+    return deep_results, promising_data, all_tickers
 
 # ============================================
-# INTERFEJS UŻYTKOWNIKA
+# SIDEBAR
 # ============================================
 
-st.markdown('<h1 class="main-header">🧠 NASDAQ Intelligent Scanner</h1>', unsafe_allow_html=True)
-
-# Sidebar
 with st.sidebar:
     st.image("https://img.icons8.com/color/96/000000/stock-exchange.png", width=80)
     st.header("🔍 Filtry")
     
     st.markdown("---")
     
-    # Informacje o trybie
-    st.subheader("🧠 Tryb inteligentny")
-    st.info("""
-    **Dwuetapowe skanowanie:**
-    1. Prescan 3500 spółek (30s)
-    2. Głębokie skanowanie obiecujących (3-4 min)
-    """)
+    # Informacje
+    st.subheader("🧠 Dwuetapowe skanowanie")
+    st.caption("Faza 1: RVOL > 1.5")
+    st.caption("Faza 2: RVOL > 2.0 (2/4 dni) + OBV/A/D/CMF > 0")
     
     st.markdown("---")
     
@@ -430,159 +572,157 @@ with st.sidebar:
     # Przyciski
     col1, col2 = st.columns(2)
     with col1:
-        scan_btn = st.button("🧠 Skanuj inteligentnie", type="primary", use_container_width=True)
+        scan_btn = st.button("🧠 Skanuj", type="primary", use_container_width=True)
     with col2:
         refresh_btn = st.button("🔄 Świeże dane", use_container_width=True)
     
     st.markdown("---")
     
-    # Konserwacja - NAPRAWIONE!
+    # Konserwacja
     st.subheader("🧹 Konserwacja")
     
-    # Informacja o cache
     if os.path.exists(CACHE_FILE):
         size_kb = os.path.getsize(CACHE_FILE) / 1024
         st.caption(f"📦 Cache: {size_kb:.1f} KB")
     
-    # Przycisk czyszczenia BEZ RESTARTU!
     if st.button("🧹 Wyczyść cache", use_container_width=True):
         if clear_cache():
-            st.success("✅ Cache wyczyszczony! Następne skanowanie będzie świeże.")
+            st.success("✅ Cache wyczyszczony!")
             time.sleep(1)
+            st.rerun()
         else:
             st.info("ℹ️ Cache był już pusty")
-            time.sleep(1)
 
-# Główna logika
+# ============================================
+# GŁÓWNA LOGIKA
+# ============================================
+
 if scan_btn or refresh_btn:
     force_refresh = refresh_btn
     
     if force_refresh:
-        clear_cache()  # Wymuś świeże dane
+        clear_cache()
     
     with st.spinner("Inicjowanie inteligentnego skanowania..."):
-        results, all_tickers = intelligent_scan(force_refresh)
+        deep_results, prescan_data, all_tickers = intelligent_scan(force_refresh)
     
-    if results:
-        df = pd.DataFrame(results)
+    if prescan_data or deep_results:
         
-        # Filtry
-        if min_price > 0:
-            df = df[df['Cena'] >= min_price]
-        if max_price < 10000:
-            df = df[df['Cena'] <= max_price]
-        if use_rvol:
-            df = df[df['RVOL OK'] == '✅']
-        if use_flow:
-            df = df[df['Flow OK'] == '✅']
+        # Tworzymy zakładki
+        tab1, tab2 = st.tabs(["🔍 FAZA 1: Prescan (RVOL > 1.5)", "🔬 FAZA 2: Głębokie skanowanie"])
         
-        # Statystyki
-        st.markdown("---")
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            st.markdown(f"""
-            <div class="stat-card">
-                <div style="font-size: 2rem;">{len(all_tickers)}</div>
-                <div>Spółek na NASDAQ</div>
-            </div>
-            """, unsafe_allow_html=True)
-        
-        with col2:
-            st.markdown(f"""
-            <div class="stat-card">
-                <div style="font-size: 2rem;">{len(df)}</div>
-                <div>Po filtrach</div>
-            </div>
-            """, unsafe_allow_html=True)
-        
-        with col3:
-            rvol_count = len(df[df['RVOL OK'] == '✅'])
-            st.markdown(f"""
-            <div class="stat-card">
-                <div style="font-size: 2rem;">{rvol_count}</div>
-                <div>Z RVOL >2</div>
-            </div>
-            """, unsafe_allow_html=True)
-        
-        with col4:
-            flow_count = len(df[df['Flow OK'] == '✅'])
-            st.markdown(f"""
-            <div class="stat-card">
-                <div style="font-size: 2rem;">{flow_count}</div>
-                <div>Z przepływem >0</div>
-            </div>
-            """, unsafe_allow_html=True)
-        
-        # Wyniki
-        st.subheader("📋 Wyniki skanowania")
-        
-        df = df.sort_values('RVOL', ascending=False)
-        
-        st.dataframe(
-            df,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Cena": st.column_config.NumberColumn(format="$%.2f"),
-                "Wolumen": st.column_config.NumberColumn(format="%d"),
-                "CMF": st.column_config.NumberColumn(format="%.3f"),
-                "Zmiana 1d": st.column_config.NumberColumn(format="%.1f%%"),
-                "Zmiana 5d": st.column_config.NumberColumn(format="%.1f%%")
-            }
-        )
-        
-        # Eksport
-        csv = df.to_csv(index=False)
-        st.download_button(
-            "📥 Pobierz CSV",
-            csv,
-            f"nasdaq_intelligent_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-            "text/csv"
-        )
-        
-        # Top 10
-        with st.expander("🏆 Top 10 spółek", expanded=False):
-            col1, col2 = st.columns(2)
-            with col1:
-                st.write("**Najwyższy RVOL**")
+        with tab1:
+            if prescan_data:
+                df_prescan = pd.DataFrame(prescan_data)
+                st.subheader(f"Znaleziono {len(df_prescan)} spółek z RVOL > 1.5")
+                
                 st.dataframe(
-                    df[['Ticker', 'RVOL', 'CMF', 'Cena']].head(10),
+                    df_prescan.sort_values('RVOL (prescan)', ascending=False),
                     use_container_width=True,
                     hide_index=True
                 )
-            with col2:
-                st.write("**Najwyższy CMF**")
-                st.dataframe(
-                    df.sort_values('CMF', ascending=False)[['Ticker', 'CMF', 'RVOL', 'Cena']].head(10),
-                    use_container_width=True,
-                    hide_index=True
+                
+                # Eksport prescanu
+                csv_prescan = df_prescan.to_csv(index=False)
+                st.download_button(
+                    "📥 Pobierz prescan CSV",
+                    csv_prescan,
+                    f"prescan_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                    "text/csv"
                 )
+            else:
+                st.info("Brak spółek w prescanie")
+        
+        with tab2:
+            if deep_results:
+                df_deep = pd.DataFrame(deep_results)
+                
+                # Filtry
+                if min_price > 0:
+                    df_deep = df_deep[df_deep['Cena'] >= min_price]
+                if max_price < 10000:
+                    df_deep = df_deep[df_deep['Cena'] <= max_price]
+                if use_rvol:
+                    df_deep = df_deep[df_deep['RVOL OK'] == '✅']
+                if use_flow:
+                    df_deep = df_deep[df_deep['Flow OK'] == '✅']
+                
+                # Statystyki
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Przed filtrami", len(deep_results))
+                with col2:
+                    st.metric("Po filtrach", len(df_deep))
+                with col3:
+                    flow_count = len(df_deep[df_deep['Flow OK'] == '✅'])
+                    st.metric("Z przepływem >0", flow_count)
+                
+                st.subheader("Wyniki głębokiego skanowania")
+                
+                st.dataframe(
+                    df_deep.sort_values('RVOL', ascending=False),
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "Cena": st.column_config.NumberColumn(format="$%.2f"),
+                        "Wolumen": st.column_config.NumberColumn(format="%d"),
+                        "OBV": st.column_config.NumberColumn(format="%.2f"),
+                        "A/D": st.column_config.NumberColumn(format="%.2f"),
+                        "CMF": st.column_config.NumberColumn(format="%.3f"),
+                        "Zmiana 1d": st.column_config.NumberColumn(format="%.1f%%"),
+                        "Zmiana 5d": st.column_config.NumberColumn(format="%.1f%%")
+                    }
+                )
+                
+                # Eksport głębokiego
+                csv_deep = df_deep.to_csv(index=False)
+                st.download_button(
+                    "📥 Pobierz głębokie CSV",
+                    csv_deep,
+                    f"deep_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                    "text/csv"
+                )
+                
+                # Top 10
+                with st.expander("🏆 Top 10", expanded=False):
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.write("**Najwyższy RVOL**")
+                        st.dataframe(
+                            df_deep[['Ticker', 'RVOL', 'CMF', 'Cena']].head(10),
+                            use_container_width=True,
+                            hide_index=True
+                        )
+                    with col2:
+                        st.write("**Najwyższy CMF**")
+                        st.dataframe(
+                            df_deep.sort_values('CMF', ascending=False)[['Ticker', 'CMF', 'RVOL', 'Cena']].head(10),
+                            use_container_width=True,
+                            hide_index=True
+                        )
+            else:
+                st.info("Brak wyników w głębokim skanowaniu")
         
     else:
-        st.warning("Nie znaleziono spółek spełniających kryteria. Spróbuj rozszerzyć filtry.")
+        st.warning("Nie znaleziono żadnych spółek")
 
 # Instrukcja
-with st.expander("ℹ️ Jak działa inteligentne skanowanie?", expanded=False):
+with st.expander("ℹ️ Instrukcja", expanded=False):
     st.markdown("""
-    ### 🧠 Dwuetapowe skanowanie:
+    ### 🧠 Jak działa skanowanie:
     
-    **FAZA 1: Prescan (30 sekund)**
-    - Szybkie sprawdzenie wszystkich 3500 spółek
-    - Tylko RVOL, uproszczone obliczenia
-    - Próg: RVOL > 1.5
+    **FAZA 1: Prescan (RVOL > 1.5)**
+    - Szybkie sprawdzenie wszystkich spółek
+    - Pokazuje potencjalne okazje
     
-    **FAZA 2: Głębokie skanowanie (3-4 minuty)**
-    - Tylko obiecujące spółki z fazy 1
-    - Pełne obliczenia (RVOL, OBV, A/D, CMF)
-    - Dokładne wskaźniki techniczne
+    **FAZA 2: Głębokie skanowanie**
+    - RVOL > 2.0 i ≥2 z ostatnich 4 dni
+    - OBV > 0 (napływ kapitału)
+    - A/D > 0 (presja kupna)
+    - CMF > 0 (pieniądze wpływają)
     
-    **Korzyści:**
-    - ✅ Sprawdza WSZYSTKIE spółki
-    - ✅ Szybciej niż pełne skanowanie
-    - ✅ Nie pomija małych spółek z potencjałem
-    
-    **Konserwacja:**
-    - Przycisk "Wyczyść cache" usuwa dane BEZ restartu
-    - Następne skanowanie pobierze świeże dane
+    **🔧 Jeśli nie ma wyników:**
+    1. Użyj testów na górze strony
+    2. Kliknij "TEST 1" żeby sprawdzić RVOL dla AAPL
+    3. Kliknij "TEST 3" żeby zobaczyć 10 spółek
     """)
