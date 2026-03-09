@@ -26,24 +26,6 @@ st.markdown("""
         margin-bottom: 1rem;
         font-weight: 600;
     }
-    .phase-box {
-        background-color: #f0f2f6;
-        padding: 1.5rem;
-        border-radius: 10px;
-        margin: 1rem 0;
-        border-left: 4px solid #00A3E0;
-    }
-    .phase-title {
-        font-size: 1.3rem;
-        font-weight: bold;
-        color: #00A3E0;
-        margin-bottom: 0.5rem;
-    }
-    .phase-desc {
-        color: #666;
-        margin-bottom: 1rem;
-        font-size: 0.9rem;
-    }
     .stats-box {
         background-color: #e8f4fd;
         padding: 1rem;
@@ -52,12 +34,6 @@ st.markdown("""
         margin: 1rem 0;
         font-size: 1.2rem;
         font-weight: bold;
-    }
-    .button-container {
-        display: flex;
-        gap: 1rem;
-        margin: 2rem 0;
-        justify-content: center;
     }
     .stButton button {
         min-width: 150px;
@@ -191,7 +167,7 @@ def deep_scan_ticker(ticker):
         if avg_volume == 0:
             return None
         
-        # RVOL dla ostatnich 4 dni (dzisiaj + 3 poprzednie)
+        # RVOL dla ostatnich 4 dni
         rvol_values = []
         for i in range(1, 5):
             if len(df) >= i:
@@ -296,7 +272,7 @@ def run_scan():
         st.markdown(f"<div class='stats-box'>✅ Znaleziono {len(df_prescan)} spółek</div>", unsafe_allow_html=True)
         st.dataframe(df_prescan, use_container_width=True)
     else:
-        st.markdown("<div class='stats-box'>❌ Brak spółek</div>", unsafe_allow_html=True)
+        st.markdown("<div class='stats-box'>❌ Brak spółek w prescanie</div>", unsafe_allow_html=True)
         return
     
     # GŁĘBOKIE
@@ -332,7 +308,7 @@ def run_scan():
         csv = df_deep.to_csv(index=False)
         st.download_button("📥 Pobierz CSV", csv, f"wyniki_{datetime.now().strftime('%Y%m%d_%H%M')}.csv")
     else:
-        st.markdown("<div class='stats-box'>❌ Brak spółek</div>", unsafe_allow_html=True)
+        st.markdown("<div class='stats-box'>❌ Brak spółek w głębokim</div>", unsafe_allow_html=True)
 
 # ============================================
 # WYKONANIE
