@@ -75,7 +75,7 @@ st.markdown("""
 CACHE_FILE = "nasdaq_cache.gz"
 RVOL_THRESHOLD = 2.0
 PRESCAN_THRESHOLD = 2.0
-MAX_WORKERS = 30  # Zwiększone dla szybszego skanowania
+MAX_WORKERS = 30
 TIMEOUT_SECONDS = 10
 CACHE_MAX_AGE_HOURS = 12
 
@@ -111,23 +111,27 @@ with col3:
             st.rerun()
 
 # ============================================
-# FUNKCJE POBIERANIA LISTY SPÓŁEK
+# FUNKCJE POBIERANIA LISTY SPÓŁEK - POPRAWIONE
 # ============================================
 
 @st.cache_data(ttl=3600)
 def get_nasdaq_tickers():
-    """Pobiera listę WSZYSTKICH spółek NASDAQ"""
+    """Pobiera listę WSZYSTKICH spółek NASDAQ - POPRAWIONA WERSJA"""
     try:
         # Oficjalne źródło NASDAQ Trader
         url = "https://www.nasdaqtrader.com/dynamic/symdir/nasdaqtraded.txt"
         df = pd.read_csv(url, sep='|')
         
-        # Filtruj tylko aktywne spółki (nie ETF, nie testowe)
-        stocks = df[
-            (df['NASDAQ Symbol'].notna()) & 
-            (df['ETF'] == 'N') & 
-            (df['TEST ISSUE'] == 'N')
-        ]
+        # Sprawdź jakie kolumny są dostępne
+        available_columns = df.columns.tolist()
+        
+        # Filtruj tylko aktywne spółki (dostosowane do rzeczywistych kolumn)
+        if 'ETF' in available_columns:
+            # Mamy kolumnę ETF, możemy filtrować
+            stocks = df[df['NASDAQ Symbol'].notna() & (df['ETF'] == 'N')]
+        else:
+            # Nie mamy kolumny ETF, weź wszystkie z tickerem
+            stocks = df[df['NASDAQ Symbol'].notna()]
         
         tickers = stocks['NASDAQ Symbol'].tolist()
         # Zwracamy WSZYSTKIE spółki bez ograniczeń
