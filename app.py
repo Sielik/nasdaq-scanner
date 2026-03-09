@@ -90,33 +90,38 @@ with st.expander("🔧 TESTY", expanded=True):
     col1, col2, col3 = st.columns(3)
     
     with col1:
-        if st.button("🔍 TEST - RVOL dla AAPL"):
-            with st.spinner("Sprawdzam AAPL..."):
-                try:
-                    ticker = stock.Ticker('AAPL')
-                    df = ticker.nasdaq.hist_quotes_stock
-                    
-                    if df is not None and len(df) > 10:
-                        # Naprawa danych
-                        df['Volume'] = df['Volume'].astype(str).str.replace(',', '').astype(float)
-                        df['Close'] = df['Close/Last'].astype(str).str.replace(',', '').astype(float)
-                        
-                        # Weź ostatnie 10 dni
-                        df = df.sort_values('Date', ascending=False).head(10)
-                        
-                        volumes = df['Volume'].values
-                        avg_vol = np.mean(volumes[1:])
-                        today_vol = volumes[0]
-                        rvol = today_vol / avg_vol if avg_vol > 0 else 0
-                        
-                        st.success(f"✅ RVOL = {rvol:.2f}")
-                        st.write(f"Średni wolumen (9d): {avg_vol:.0f}")
-                        st.write(f"Dzisiejszy wolumen: {today_vol:.0f}")
-                        st.dataframe(df[['Date', 'Volume']].head())
-                    else:
-                        st.error("Brak danych")
-                except Exception as e:
-                    st.error(f"Błąd: {e}")
+    if st.button("🔍 TEST - AAPL (naprawiony)"):
+        with st.spinner("Sprawdzam AAPL..."):
+            try:
+                ticker = stock.Ticker('AAPL')
+                df = ticker.nasdaq.hist_quotes_stock
+                
+                st.write("**Przed naprawą:**")
+                st.dataframe(df.head(3))
+                
+                # NAPRAWA
+                for col in df.columns:
+                    if col != 'Date':
+                        df[col] = df[col].astype(str).str.replace('$', '', regex=False)
+                        df[col] = df[col].str.replace(',', '', regex=False)
+                        df[col] = pd.to_numeric(df[col], errors='coerce')
+                
+                df = df.dropna()
+                
+                st.write("**Po naprawie:**")
+                st.dataframe(df.head(3))
+                
+                # Oblicz RVOL
+                df = df.sort_values('Date', ascending=False).head(10)
+                volumes = df['Volume'].values
+                avg_vol = np.mean(volumes[1:])
+                today_vol = volumes[0]
+                rvol = today_vol / avg_vol if avg_vol > 0 else 0
+                
+                st.success(f"✅ RVOL = {rvol:.2f}")
+                
+            except Exception as e:
+                st.error(f"Błąd: {e}")
 
 # ============================================
 # FUNKCJE POBIERANIA LISTY SPÓŁEK
@@ -183,6 +188,25 @@ def get_stockhero_data(ticker):
         
         if df is None or len(df) < 25:
             return None
+        
+        # NAPRAWA: usuń $ i przecinki ze wszystkich kolumn
+        for col in df.columns:
+            if col != 'Date':  # Nie konwertuj daty
+                # Konwertuj na string, usuń $ i przecinki, zamień na float
+                df[col] = df[col].astype(str).str.replace('$', '', regex=False)
+                df[col] = df[col].str.replace(',', '', regex=False)
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+        
+        # Usuń wiersze z brakującymi danymi
+        df = df.dropna()
+        
+        df = df.sort_values('Date').reset_index(drop=True)
+        df['Ticker'] = ticker
+        
+        return df
+        
+    except Exception as e:
+        return None
         
         # Naprawa danych - usuń przecinki i konwertuj na float
         df['Volume'] = df['Volume'].astype(str).str.replace(',', '').astype(float)
