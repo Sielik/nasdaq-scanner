@@ -14,8 +14,8 @@ from io import StringIO
 
 # Konfiguracja strony
 st.set_page_config(
-    page_title="NASDAQ Intelligent Scanner",
-    page_icon="🧠",
+    page_title="NASDAQ StockHero Scanner",
+    page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -46,168 +46,70 @@ st.markdown("""
         text-align: center;
         font-weight: bold;
     }
-    .test-box {
-        background-color: #e1f5fe;
-        padding: 1rem;
-        border-radius: 10px;
-        margin: 1rem 0;
-        border-left: 4px solid #03a9f4;
-    }
-    .api-limit {
-        background-color: #fff3cd;
-        color: #856404;
-        padding: 0.5rem;
-        border-radius: 5px;
-        margin: 0.5rem 0;
-        text-align: center;
+    .free-badge {
+        background-color: #28a745;
+        color: white;
+        padding: 0.2rem 0.5rem;
+        border-radius: 20px;
+        font-size: 0.8rem;
+        font-weight: bold;
+        display: inline-block;
     }
 </style>
 """, unsafe_allow_html=True)
 
 # Stałe
-CACHE_FILE = "nasdaq_intelligent_cache.gz"
+CACHE_FILE = "nasdaq_stockhero_cache.gz"
 RVOL_THRESHOLD = 2.0
 PRESCAN_THRESHOLD = 1.5
-MAX_WORKERS_PRESCAN = 10
-MAX_WORKERS_DEEP = 5
+MAX_WORKERS = 20  # StockHero nie ma limitów, możemy skanować równolegle!
 TIMEOUT_SECONDS = 10
 CACHE_MAX_AGE_HOURS = 12
-ALPHA_VANTAGE_KEY = "Y1XLMK79ZJ9CWKSU"
 
 # ============================================
-# TESTY - widoczne na górze
+# IMPORT STOCKHERO - DZIAŁA BEZ KLUCZY API!
+# ============================================
+try:
+    import StockHero as stock
+    STOCKHERO_AVAILABLE = True
+except ImportError:
+    STOCKHERO_AVAILABLE = False
+    st.error("⚠️ Zainstaluj StockHero: pip install StockHero")
+
+# ============================================
+# TESTY
 # ============================================
 
-st.markdown('<h1 class="main-header">🧠 NASDAQ Intelligent Scanner</h1>', unsafe_allow_html=True)
+st.markdown('<h1 class="main-header">📊 NASDAQ StockHero Scanner</h1>', unsafe_allow_html=True)
 
-with st.expander("🔧 TESTY POŁĄCZENIA", expanded=True):
-    st.markdown('<div class="api-limit">⚠️ Alpha Vantage: 5 zapytań/minutę</div>', unsafe_allow_html=True)
+if not STOCKHERO_AVAILABLE:
+    st.error("❌ StockHero nie jest zainstalowane! Dodaj 'StockHero' do requirements.txt")
+    st.stop()
+
+with st.expander("🔧 TESTY", expanded=True):
+    st.markdown('<span class="free-badge">💰 DARMOWE - BEZ KLUCZY API</span>', unsafe_allow_html=True)
     
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        if st.button("🔍 TEST 1 - RVOL dla AAPL"):
-            with st.spinner("Sprawdzam AAPL..."):
-                try:
-                    url = f"https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol=AAPL&apikey={ALPHA_VANTAGE_KEY}&outputsize=compact"
-                    response = requests.get(url, timeout=10)
-                    data = response.json()
-                    
-                    if "Time Series (Daily)" in data:
-                        time_series = data["Time Series (Daily)"]
-                        dates = sorted(time_series.keys(), reverse=True)[:10]
-                        volumes = []
-                        for date in dates:
-                            volumes.append(float(time_series[date]["5. volume"]))
-                        
-                        avg_vol = np.mean(volumes)
-                        today_vol = volumes[0]
-                        rvol = today_vol / avg_vol if avg_vol > 0 else 0
-                        
-                        st.success(f"✅ RVOL dla AAPL = {rvol:.2f}")
-                        if rvol > PRESCAN_THRESHOLD:
-                            st.info(f"➡️ Powyżej progu {PRESCAN_THRESHOLD}")
-                        else:
-                            st.warning(f"⬇️ Poniżej progu {PRESCAN_THRESHOLD}")
-                        
-                        # Pokaż szczegóły
-                        st.write(f"Średni wolumen (10d): {avg_vol:.0f}")
-                        st.write(f"Dzisiejszy wolumen: {today_vol:.0f}")
-                    else:
-                        if "Note" in data:
-                            st.error(f"Limit API: {data['Note']}")
-                        else:
-                            st.error("Brak danych")
-                except Exception as e:
-                    st.error(f"Błąd: {e}")
-    
-    with col2:
-        if st.button("🌐 TEST 2 - status API"):
+    if st.button("🔍 TEST - RVOL dla AAPL"):
+        with st.spinner("Sprawdzam AAPL..."):
             try:
-                r = requests.get("https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol=AAPL&apikey=demo", timeout=5)
-                if r.status_code == 200:
-                    st.success("✅ API dostępne")
-                else:
-                    st.error(f"Błąd {r.status_code}")
-            except:
-                st.error("❌ Brak połączenia")
-    
-    with col3:
-        if st.button("📊 TEST 3 - sprawdź 5 spółek"):
-            with st.spinner("Sprawdzam..."):
-                test_tickers = ["AAPL", "MSFT", "GOOGL", "META", "NVDA"]
-                results = []
-                progress = st.progress(0)
+                ticker = stock.Ticker('AAPL')
+                df = ticker.nasdaq.hist_quotes_stock
                 
-                for i, t in enumerate(test_tickers):
-                    try:
-                        url = f"https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={t}&apikey={ALPHA_VANTAGE_KEY}&outputsize=compact"
-                        response = requests.get(url, timeout=10)
-                        data = response.json()
-                        
-                        if "Time Series (Daily)" in data:
-                            time_series = data["Time Series (Daily)"]
-                            dates = sorted(time_series.keys(), reverse=True)[:10]
-                            volumes = []
-                            for date in dates:
-                                volumes.append(float(time_series[date]["5. volume"]))
-                            
-                            avg_vol = np.mean(volumes)
-                            today_vol = volumes[0]
-                            rvol = today_vol / avg_vol if avg_vol > 0 else 0
-                            results.append({"Ticker": t, "RVOL": round(rvol, 2)})
-                        else:
-                            results.append({"Ticker": t, "RVOL": 0})
-                    except:
-                        results.append({"Ticker": t, "RVOL": 0})
+                if df is not None and len(df) > 10:
+                    df = df.sort_values('Date', ascending=False).head(10)
+                    volumes = df['Volume'].values
+                    avg_vol = np.mean(volumes[1:])
+                    today_vol = volumes[0]
+                    rvol = today_vol / avg_vol if avg_vol > 0 else 0
                     
-                    progress.progress((i + 1) / len(test_tickers))
-                    time.sleep(12)  # 12 sekund przerwy (limit API)
-                
-                progress.empty()
-                df_test = pd.DataFrame(results)
-                st.dataframe(df_test, use_container_width=True)
-
-# ============================================
-# DIAGNOZA STOOQ.PL
-# ============================================
-
-with st.expander("🔧 DIAGNOZA STOOQ.PL", expanded=True):
-    if st.button("🔍 Sprawdź co zwraca stooq.pl dla AAPL"):
-        try:
-            url = "https://stooq.pl/q/d/l/?s=aapl.us&i=d"
-            st.write(f"Łączę do: {url}")
-            
-            response = requests.get(url, timeout=10)
-            st.write(f"Status HTTP: {response.status_code}")
-            st.write(f"Nagłówki: {dict(response.headers)}")
-            st.write(f"Pierwsze 500 znaków odpowiedzi:")
-            st.code(response.text[:500])
-            
-            # Próba wczytania CSV
-            try:
-                from io import StringIO
-                df = pd.read_csv(StringIO(response.text))
-                st.write("✅ Udało się wczytać CSV!")
-                st.write(f"Kolumny: {df.columns.tolist()}")
-                st.write(f"Liczba wierszy: {len(df)}")
-                st.dataframe(df.head())
-                
-                # Pokaż wolumen
-                if 'Wolumen' in df.columns:
-                    st.write(f"Wolumen: {df['Wolumen'].tolist()}")
-                elif 'Volume' in df.columns:
-                    st.write(f"Volume: {df['Volume'].tolist()}")
+                    st.success(f"✅ RVOL dla AAPL = {rvol:.2f}")
+                    st.write(f"Średni wolumen (9d): {avg_vol:.0f}")
+                    st.write(f"Dzisiejszy wolumen: {today_vol:.0f}")
+                    st.dataframe(df.head())
                 else:
-                    # Szukaj kolumny numerycznej
-                    for col in df.columns:
-                        if df[col].dtype in ['int64', 'float64']:
-                            st.write(f"Kolumna numeryczna '{col}': {df[col].tolist()}")
-                            break
-            except Exception as csv_error:
-                st.error(f"❌ Błąd CSV: {csv_error}")
-        except Exception as e:
-            st.error(f"Błąd połączenia: {e}")
+                    st.error("Brak danych")
+            except Exception as e:
+                st.error(f"Błąd: {e}")
 
 # ============================================
 # FUNKCJE POBIERANIA LISTY SPÓŁEK
@@ -269,38 +171,50 @@ def get_fallback_tickers():
     ]
 
 # ============================================
-# FUNKCJA QUICK RVOL CHECK
+# FUNKCJA POBIERANIA DANYCH Z STOCKHERO
+# ============================================
+
+def get_stockhero_data(ticker):
+    """
+    Pobiera dane giełdowe z StockHero
+    StockHero: darmowe, bez limitów, bez kluczy API!
+    """
+    try:
+        ticker_obj = stock.Ticker(ticker)
+        df = ticker_obj.nasdaq.hist_quotes_stock
+        
+        if df is None or len(df) < 25:
+            return None
+        
+        # StockHero zwraca kolumny: Date, Open, High, Low, Close, Volume
+        df = df.sort_values('Date').reset_index(drop=True)
+        df['Ticker'] = ticker
+        
+        return df
+        
+    except Exception as e:
+        return None
+
+# ============================================
+# FUNKCJA QUICK RVOL CHECK (PRESCAN)
 # ============================================
 
 def quick_rvol_check(ticker):
     """
-    FAZA 1: Szybkie sprawdzenie RVOL używając Alpha Vantage
+    Szybkie sprawdzenie RVOL używając StockHero
     """
     try:
-        url = f"https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={ticker}&apikey={ALPHA_VANTAGE_KEY}&outputsize=compact"
+        df = get_stockhero_data(ticker)
         
-        response = requests.get(url, timeout=TIMEOUT_SECONDS)
-        data = response.json()
-        
-        # Sprawdź czy są dane
-        if "Time Series (Daily)" not in data:
+        if df is None or len(df) < 10:
             return 0
         
-        # Pobierz ostatnie 10 dni
-        time_series = data["Time Series (Daily)"]
-        dates = sorted(time_series.keys(), reverse=True)[:10]
+        # Pobierz wolumeny (ostatnie 10 dni)
+        volumes = df['Volume'].values[-10:]
         
-        if len(dates) < 5:
-            return 0
-        
-        # Pobierz wolumeny
-        volumes = []
-        for date in dates:
-            volumes.append(float(time_series[date]["5. volume"]))
-        
-        # Oblicz RVOL
-        avg_vol = np.mean(volumes)
-        today_vol = volumes[0]
+        # Oblicz RVOL (dzisiejszy / średnia z 9 poprzednich dni)
+        avg_vol = np.mean(volumes[:-1])
+        today_vol = volumes[-1]
         
         if avg_vol == 0:
             return 0
@@ -369,8 +283,9 @@ def clear_cache():
 def prescan_all_tickers(tickers):
     """
     FAZA 1: Prescan wszystkich spółek
+    StockHero pozwala na równoległe zapytania bez limitów!
     """
-    st.markdown('<div class="phase-indicator">🔍 FAZA 1: Prescan wszystkich spółek (RVOL > 1.5)</div>', 
+    st.markdown('<div class="phase-indicator">🔍 FAZA 1: Prescan (RVOL > 1.5) - <span class="free-badge">💰 DARMOWE API</span></div>', 
                 unsafe_allow_html=True)
     
     promising_tickers = []
@@ -378,16 +293,13 @@ def prescan_all_tickers(tickers):
     progress_bar = st.progress(0)
     status_text = st.empty()
     
-    # Ogranicz liczbę spółek ze względu na limit API
-    scan_tickers = tickers[:200]  # Tylko pierwsze 200
-    
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS_PRESCAN) as executor:
-        futures = {executor.submit(quick_rvol_check, t): t for t in scan_tickers}
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        futures = {executor.submit(quick_rvol_check, t): t for t in tickers}
         
         for i, future in enumerate(as_completed(futures)):
             ticker = futures[future]
             try:
-                rvol = future.result(timeout=10)
+                rvol = future.result(timeout=15)
                 if rvol > PRESCAN_THRESHOLD:
                     promising_tickers.append(ticker)
                     promising_data.append({
@@ -398,9 +310,9 @@ def prescan_all_tickers(tickers):
             except:
                 pass
             
-            if i % 10 == 0:
-                progress_bar.progress(i / len(scan_tickers))
-                status_text.text(f"Prescan: {i}/{len(scan_tickers)} | Znaleziono: {len(promising_tickers)}")
+            if i % 50 == 0:
+                progress_bar.progress(i / len(tickers))
+                status_text.text(f"Prescan: {i}/{len(tickers)} | Znaleziono: {len(promising_tickers)}")
     
     progress_bar.empty()
     status_text.empty()
@@ -416,33 +328,11 @@ def deep_scan_ticker(ticker):
     FAZA 2: Głębokie skanowanie pojedynczej spółki
     """
     try:
-        url = f"https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={ticker}&apikey={ALPHA_VANTAGE_KEY}&outputsize=full"
+        df = get_stockhero_data(ticker)
         
-        response = requests.get(url, timeout=TIMEOUT_SECONDS)
-        data = response.json()
-        
-        if "Time Series (Daily)" not in data:
+        if df is None or len(df) < 25:
             return None
         
-        time_series = data["Time Series (Daily)"]
-        dates = sorted(time_series.keys(), reverse=True)
-        
-        if len(dates) < 25:
-            return None
-        
-        # Stwórz DataFrame
-        df_list = []
-        for date in dates[:60]:
-            df_list.append({
-                'Date': date,
-                'Open': float(time_series[date]["1. open"]),
-                'High': float(time_series[date]["2. high"]),
-                'Low': float(time_series[date]["3. low"]),
-                'Close': float(time_series[date]["4. close"]),
-                'Volume': float(time_series[date]["5. volume"])
-            })
-        
-        df = pd.DataFrame(df_list)
         df = df.sort_values('Date').reset_index(drop=True)
         
         # RVOL
@@ -537,7 +427,7 @@ def deep_scan_promising(promising_tickers):
     """
     FAZA 2: Głębokie skanowanie obiecujących spółek
     """
-    st.markdown('<div class="phase-indicator">🔬 FAZA 2: Głębokie skanowanie</div>', 
+    st.markdown('<div class="phase-indicator">🔬 FAZA 2: Głębokie skanowanie - <span class="free-badge">💰 DARMOWE API</span></div>', 
                 unsafe_allow_html=True)
     
     if not promising_tickers:
@@ -548,18 +438,17 @@ def deep_scan_promising(promising_tickers):
     progress_bar = st.progress(0)
     status_text = st.empty()
     
-    for i, ticker in enumerate(promising_tickers):
-        status_text.text(f"Skanowanie: {i+1}/{len(promising_tickers)} - {ticker}")
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        futures = {executor.submit(deep_scan_ticker, t): t for t in promising_tickers}
         
-        result = deep_scan_ticker(ticker)
-        if result:
-            results.append(result)
-        
-        progress_bar.progress((i + 1) / len(promising_tickers))
-        
-        # Czekaj na limit API
-        if i < len(promising_tickers) - 1:
-            time.sleep(12)
+        for i, future in enumerate(as_completed(futures)):
+            result = future.result()
+            if result:
+                results.append(result)
+            
+            if i % 10 == 0:
+                progress_bar.progress((i + 1) / len(promising_tickers))
+                status_text.text(f"Skanowanie: {i+1}/{len(promising_tickers)} | Znaleziono: {len(results)}")
     
     progress_bar.empty()
     status_text.empty()
@@ -568,7 +457,7 @@ def deep_scan_promising(promising_tickers):
 
 def intelligent_scan(force_refresh=False):
     """
-    GŁÓWNA FUNKCJA - dwuetapowe inteligentne skanowanie
+    GŁÓWNA FUNKCJA - dwuetapowe inteligentne skanowanie z StockHero
     """
     # Lista spółek
     with st.spinner("📡 Pobieranie listy spółek..."):
@@ -606,7 +495,7 @@ with st.sidebar:
     
     # Informacje
     st.subheader("🧠 Informacje")
-    st.caption(f"Alpha Vantage API (5 zapytań/min)")
+    st.markdown('<span class="free-badge">💰 DARMOWE API - BEZ LIMITÓW</span>', unsafe_allow_html=True)
     st.caption(f"Prescan: RVOL > {PRESCAN_THRESHOLD}")
     st.caption(f"Głębokie: RVOL > {RVOL_THRESHOLD} (2/4 dni) + OBV/A/D/CMF > 0")
     
@@ -643,9 +532,7 @@ with st.sidebar:
     
     if st.button("🧹 Wyczyść cache", use_container_width=True):
         if clear_cache():
-            st.success("✅ Cache wyczyszczony!")
-            time.sleep(1)
-            st.rerun()
+            st.success("✅ Cache wyczyszczony! Następne skanowanie pobierze świeże dane.")
         else:
             st.info("ℹ️ Cache był już pusty")
 
@@ -659,7 +546,7 @@ if scan_btn or refresh_btn:
     if force_refresh:
         clear_cache()
     
-    with st.spinner("Inicjowanie inteligentnego skanowania..."):
+    with st.spinner("Inicjowanie skanowania..."):
         deep_results, prescan_data, all_tickers = intelligent_scan(force_refresh)
     
     if prescan_data or deep_results:
@@ -762,22 +649,16 @@ if scan_btn or refresh_btn:
 # Instrukcja
 with st.expander("ℹ️ Instrukcja", expanded=False):
     st.markdown("""
-    ### 🧠 Jak działa skanowanie:
+    ### 📊 NASDAQ StockHero Scanner
     
-    **FAZA 1: Prescan (RVOL > 1.5)**
-    - Szybkie sprawdzenie pierwszych 200 spółek
-    - Używa Alpha Vantage API
+    **Jak działa:**
+    - Używa StockHero – darmowej biblioteki Python
+    - **Nie wymaga kluczy API ani rejestracji!**
+    - Skanuje wszystkie spółki NASDAQ (~3500)
     
-    **FAZA 2: Głębokie skanowanie**
-    - RVOL > 2.0 i ≥2 z ostatnich 4 dni
-    - OBV > 0 (napływ kapitału)
-    - A/D > 0 (presja kupna)
-    - CMF > 0 (pieniądze wpływają)
+    **Fazy:**
+    1. **Prescan** - szybkie sprawdzenie RVOL > 1.5
+    2. **Głębokie** - RVOL > 2.0 (2/4 dni) + OBV/A/D/CMF > 0
     
-    **🔧 Testy:**
-    - TEST 1: sprawdza RVOL dla AAPL
-    - TEST 2: sprawdza połączenie z API
-    - TEST 3: sprawdza 5 spółek
-    
-    **Uwaga:** Alpha Vantage ma limit 5 zapytań/minutę, dlatego skanowanie jest wolniejsze.
+    **Darmowe i bez limitów!** 🎉
     """)
