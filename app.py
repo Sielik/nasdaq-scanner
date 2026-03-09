@@ -167,18 +167,13 @@ def quick_rvol_check(ticker):
         avg_vol = np.mean(volumes)
         today_vol = volumes[0]
         
-        return today_vol / avg_vol if avg_vol > 0 else 0
-        
-    except Exception as e:
-        return 0
-        
-        # Dla debug - pokaż w sidebarze
-        st.sidebar.success(f"{ticker}: RVOL={rvol:.2f}, kolumna={volume_col}")
-        
+        if avg_vol == 0:
+            return 0
+            
+        rvol = today_vol / avg_vol
         return rvol
         
     except Exception as e:
-        st.sidebar.error(f"Błąd dla {ticker}: {e}")
         return 0
 def quick_rvol_check(ticker):
     """
@@ -570,7 +565,7 @@ def quick_rvol_check(ticker):
     FAZA 1: Szybkie sprawdzenie RVOL - NAPRAWIONA WERSJA
     """
     try:
-        url = f"https://stooq.pl/q/d/l/?s={ticker.lower()}.us&i=d"
+        url = f"https://stooq.pl/q/d/l/?s={ticker.lower()}.us&i=d")
         
         response = requests.get(url, timeout=TIMEOUT_SECONDS)
         
