@@ -169,6 +169,47 @@ with st.expander("🔧 TESTY POŁĄCZENIA", expanded=True):
                 st.dataframe(df_test, use_container_width=True)
 
 # ============================================
+# DIAGNOZA STOOQ.PL
+# ============================================
+
+with st.expander("🔧 DIAGNOZA STOOQ.PL", expanded=True):
+    if st.button("🔍 Sprawdź co zwraca stooq.pl dla AAPL"):
+        try:
+            url = "https://stooq.pl/q/d/l/?s=aapl.us&i=d"
+            st.write(f"Łączę do: {url}")
+            
+            response = requests.get(url, timeout=10)
+            st.write(f"Status HTTP: {response.status_code}")
+            st.write(f"Nagłówki: {dict(response.headers)}")
+            st.write(f"Pierwsze 500 znaków odpowiedzi:")
+            st.code(response.text[:500])
+            
+            # Próba wczytania CSV
+            try:
+                from io import StringIO
+                df = pd.read_csv(StringIO(response.text))
+                st.write("✅ Udało się wczytać CSV!")
+                st.write(f"Kolumny: {df.columns.tolist()}")
+                st.write(f"Liczba wierszy: {len(df)}")
+                st.dataframe(df.head())
+                
+                # Pokaż wolumen
+                if 'Wolumen' in df.columns:
+                    st.write(f"Wolumen: {df['Wolumen'].tolist()}")
+                elif 'Volume' in df.columns:
+                    st.write(f"Volume: {df['Volume'].tolist()}")
+                else:
+                    # Szukaj kolumny numerycznej
+                    for col in df.columns:
+                        if df[col].dtype in ['int64', 'float64']:
+                            st.write(f"Kolumna numeryczna '{col}': {df[col].tolist()}")
+                            break
+            except Exception as csv_error:
+                st.error(f"❌ Błąd CSV: {csv_error}")
+        except Exception as e:
+            st.error(f"Błąd połączenia: {e}")
+
+# ============================================
 # FUNKCJE POBIERANIA LISTY SPÓŁEK
 # ============================================
 
