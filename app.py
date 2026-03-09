@@ -202,6 +202,7 @@ def get_stockhero_data(ticker):
 def quick_rvol_check(ticker):
     """
     Szybkie sprawdzenie RVOL używając StockHero
+    Z pominięciem weekendów!
     """
     try:
         df = get_stockhero_data(ticker)
@@ -209,10 +210,20 @@ def quick_rvol_check(ticker):
         if df is None or len(df) < 10:
             return 0
         
-        # Pobierz wolumeny (ostatnie 10 dni)
+        # Konwersja Date na datetime
+        df['Date'] = pd.to_datetime(df['Date'])
+        
+        # ODFILTRUJ WEEKENDY
+        df = df[df['Date'].dt.dayofweek < 5]
+        df = df.sort_values('Date').reset_index(drop=True)
+        
+        if len(df) < 10:
+            return 0
+        
+        # Pobierz wolumeny (ostatnie 10 DNI ROBOCZYCH)
         volumes = df['Volume'].values[-10:]
         
-        # Oblicz RVOL (dzisiejszy / średnia z 9 poprzednich dni)
+        # Oblicz RVOL (dzisiejszy / średnia z 9 poprzednich dni roboczych)
         avg_vol = np.mean(volumes[:-1])
         today_vol = volumes[-1]
         
@@ -224,6 +235,8 @@ def quick_rvol_check(ticker):
         
     except Exception as e:
         return 0
+
+
 
 # ============================================
 # FUNKCJE CACHE
@@ -326,6 +339,7 @@ def prescan_all_tickers(tickers):
 def deep_scan_ticker(ticker):
     """
     FAZA 2: Głębokie skanowanie pojedynczej spółki
+    Z pominięciem weekendów - tylko dni robocze!
     """
     try:
         df = get_stockhero_data(ticker)
@@ -335,9 +349,20 @@ def deep_scan_ticker(ticker):
         
         df = df.sort_values('Date').reset_index(drop=True)
         
+        # Konwersja kolumny Date na datetime
+        df['Date'] = pd.to_datetime(df['Date'])
+        
+        # ODFILTRUJ WEEKENDY (sobota=5, niedziela=6)
+        df = df[df['Date'].dt.dayofweek < 5]  # Tylko pon-pt
+        df = df.reset_index(drop=True)
+        
+        if len(df) < 20:  # Potrzebujemy minimum 20 dni roboczych
+            return None
+        
         # RVOL
         avg_volume = df['Volume'].tail(20).mean()
         
+        # Sprawdź RVOL dla ostatnich 5 DNI ROBOCZYCH
         rvol_values = []
         for i in range(1, 6):
             if len(df) >= i:
@@ -346,11 +371,18 @@ def deep_scan_ticker(ticker):
                 rvol_values.append(rvol)
         
         today_rvol = rvol_values[0] if rvol_values else 0
+        
+        # Sprawdź ostatnie 4 DNI ROBOCZE (bez dzisiaj)
         last_4_rvol = rvol_values[1:5] if len(rvol_values) >= 5 else []
         days_over_2 = sum(1 for r in last_4_rvol if r > RVOL_THRESHOLD)
         
         rvol_ok = (today_rvol > RVOL_THRESHOLD) and (days_over_2 >= 2)
         
+        # Jeśli nie spełnia RVOL, nie licz reszty
+        if not rvol_ok:
+            return None
+        
+        # Reszta kodu bez zmian (OBV, A/D, CMF)...
         # OBV
         obv = [0]
         for i in range(1, len(df)):
