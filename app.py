@@ -83,6 +83,10 @@ with st.sidebar:
     st.header("🔍 NASDAQ Scanner")
     
     st.markdown("---")
+    st.markdown("### 📊 Informacje")
+    st.info("Dwuetapowe skanowanie:\n- Prescan: RVOL > 2 dzisiaj\n- Głębokie: RVOL > 2 w ≥2/4 dni + OBV/A/D/CMF > 0")
+    
+    st.markdown("---")
     st.markdown("### 🎯 Filtry")
     
     use_rvol = st.checkbox("Filtruj RVOL > 2", value=True)
@@ -288,11 +292,6 @@ def run_scan():
     with st.spinner("Pobieranie listy spółek..."):
         tickers = get_nasdaq_tickers()
         st.info(f"📊 Znaleziono {len(tickers)} spółek na NASDAQ")
-        
-        # Podgląd
-        with st.expander("🔍 Podgląd listy spółek"):
-            st.write(f"Pierwsze 20: {tickers[:20]}")
-            st.write(f"Ostatnie 20: {tickers[-20:]}")
     
     # PRESCAN
     st.markdown("---")
@@ -386,3 +385,4 @@ if scan_button:
 if stop_button:
     st.warning("⏹️ Skanowanie zatrzymane")
     st.rerun()
+    
