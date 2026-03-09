@@ -22,68 +22,32 @@ st.markdown("## 🔧 DIAGNOZA - TEST STOCKHERO")
 col1, col2, col3 = st.columns(3)
 
 with col1:
-    if st.button("1. TEST - AAPL"):
+    if st.button("1. TEST - AAPL (naprawiony)"):
         try:
             import StockHero as stock
             ticker = stock.Ticker('AAPL')
             df = ticker.nasdaq.hist_quotes_stock
             
-            st.write("**Surowe dane z StockHero:**")
-            st.write(f"Typ danych: {type(df)}")
+            st.write("**Przed naprawą:**")
+            st.write(df[['Date', 'Volume']].head())
             
-            if df is not None:
-                st.write(f"Kształt: {df.shape}")
-                st.write(f"Kolumny: {df.columns.tolist()}")
-                st.write(f"Liczba wierszy: {len(df)}")
-                st.dataframe(df.head(10))
-                
-                # Sprawdź daty
-                df['Date'] = pd.to_datetime(df['Date'])
-                st.write(f"Zakres dat: {df['Date'].min()} do {df['Date'].max()}")
-                
-                # Sprawdź wolumen
-                st.write(f"Średni wolumen: {df['Volume'].mean():.0f}")
-                st.write(f"Ostatni wolumen: {df['Volume'].iloc[-1]:.0f}")
-            else:
-                st.error("StockHero zwrócił None")
+            # Naprawa
+            df['Volume'] = df['Volume'].astype(str).str.replace(',', '').astype(float)
+            
+            st.write("**Po naprawie:**")
+            st.write(df[['Date', 'Volume']].head())
+            
+            # Oblicz RVOL
+            volumes = df['Volume'].values[-10:]
+            avg_vol = np.mean(volumes[:-1])
+            today_vol = volumes[-1]
+            rvol = today_vol / avg_vol if avg_vol > 0 else 0
+            
+            st.success(f"RVOL = {rvol:.2f}")
+            
         except Exception as e:
             st.error(f"Błąd: {e}")
 
-with col2:
-    if st.button("2. TEST - MSFT"):
-        try:
-            import StockHero as stock
-            ticker = stock.Ticker('MSFT')
-            df = ticker.nasdaq.hist_quotes_stock
-            
-            if df is not None:
-                st.write(f"MSFT: {len(df)} wierszy")
-                st.dataframe(df.head())
-            else:
-                st.error("Brak danych")
-        except Exception as e:
-            st.error(f"Błąd: {e}")
-
-with col3:
-    if st.button("3. TEST - połączenie"):
-        try:
-            import StockHero as stock
-            st.success("StockHero zaimportowane")
-            
-            # Spróbuj prostego tickera
-            ticker = stock.Ticker('AAPL')
-            st.write("Ticker utworzony")
-            
-            # Spróbuj pobrać dane
-            df = ticker.nasdaq.hist_quotes_stock
-            if df is not None:
-                st.success("Dane pobrane!")
-                st.write(f"Wiersze: {len(df)}")
-            else:
-                st.error("Brak danych")
-        except Exception as e:
-            st.error(f"Błąd: {e}")
-            
 # Konfiguracja strony
 st.set_page_config(
     page_title="NASDAQ StockHero Scanner",
@@ -248,8 +212,7 @@ def get_fallback_tickers():
 
 def get_stockhero_data(ticker):
     """
-    Pobiera dane giełdowe z StockHero
-    StockHero: darmowe, bez limitów, bez kluczy API!
+    Pobiera dane giełdowe z StockHero i naprawia formatowanie
     """
     try:
         ticker_obj = stock.Ticker(ticker)
@@ -258,7 +221,22 @@ def get_stockhero_data(ticker):
         if df is None or len(df) < 25:
             return None
         
-        # StockHero zwraca kolumny: Date, Open, High, Low, Close, Volume
+        # Popraw nazwy kolumn - StockHero używa innych nazw
+        df = df.rename(columns={
+            'Close/Last': 'Close',
+            'Close': 'Close'  # na wypadek gdyby jednak miało 'Close'
+        })
+        
+        # KONWERSJA WOLUMENU - NAJWAŻNIEJSZE!
+        # Usuń przecinki i zamień na liczbę
+        df['Volume'] = df['Volume'].astype(str).str.replace(',', '').astype(float)
+        
+        # Konwersja cen - też mogą być z przecinkami
+        for col in ['Open', 'High', 'Low', 'Close']:
+            if col in df.columns:
+                df[col] = df[col].astype(str).str.replace(',', '').astype(float)
+        
+        # Sortowanie po dacie
         df = df.sort_values('Date').reset_index(drop=True)
         df['Ticker'] = ticker
         
