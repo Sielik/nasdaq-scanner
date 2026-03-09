@@ -23,7 +23,7 @@ st.markdown("""
         font-size: 2.5rem;
         color: #00A3E0;
         text-align: center;
-        margin-bottom: 2rem;
+        margin-bottom: 1rem;
         font-weight: 600;
     }
     .phase-box {
@@ -63,8 +63,10 @@ st.markdown("""
         min-width: 150px;
         font-size: 1.1rem;
     }
-    .results-table {
-        margin-top: 2rem;
+    .info-text {
+        text-align: center;
+        color: #666;
+        margin-bottom: 2rem;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -72,8 +74,8 @@ st.markdown("""
 # Stałe
 CACHE_FILE = "nasdaq_cache.gz"
 RVOL_THRESHOLD = 2.0
-PRESCAN_THRESHOLD = 2.0  # Prescan też RVOL > 2
-MAX_WORKERS = 20
+PRESCAN_THRESHOLD = 2.0
+MAX_WORKERS = 30  # Zwiększone dla szybszego skanowania
 TIMEOUT_SECONDS = 10
 CACHE_MAX_AGE_HOURS = 12
 
@@ -109,24 +111,38 @@ with col3:
             st.rerun()
 
 # ============================================
-# FUNKCJE POMOCNICZE
+# FUNKCJE POBIERANIA LISTY SPÓŁEK
 # ============================================
 
 @st.cache_data(ttl=3600)
 def get_nasdaq_tickers():
-    """Pobiera listę spółek NASDAQ"""
+    """Pobiera listę WSZYSTKICH spółek NASDAQ"""
     try:
+        # Oficjalne źródło NASDAQ Trader
         url = "https://www.nasdaqtrader.com/dynamic/symdir/nasdaqtraded.txt"
         df = pd.read_csv(url, sep='|')
+        
+        # Filtruj tylko aktywne spółki (nie ETF, nie testowe)
         stocks = df[
             (df['NASDAQ Symbol'].notna()) & 
             (df['ETF'] == 'N') & 
             (df['TEST ISSUE'] == 'N')
         ]
+        
         tickers = stocks['NASDAQ Symbol'].tolist()
-        return [t.strip() for t in tickers if t.strip()][:500]  # Na razie 500 dla testu
-    except:
+        # Zwracamy WSZYSTKIE spółki bez ograniczeń
+        all_tickers = [t.strip() for t in tickers if t.strip()]
+        
+        return all_tickers
+        
+    except Exception as e:
+        st.warning(f"Błąd pobierania listy: {e}")
+        # Lista awaryjna gdyby NASDAQ Trader nie działał
         return ["AAPL", "MSFT", "GOOGL", "META", "NVDA", "AMD", "TSLA", "NFLX"]
+
+# ============================================
+# FUNKCJA POBIERANIA DANYCH
+# ============================================
 
 def get_stock_data(ticker):
     """Pobiera dane ze StockHero z naprawą formatowania i filtrowaniem weekendów"""
@@ -137,7 +153,7 @@ def get_stock_data(ticker):
         if df is None or len(df) < 25:
             return None
         
-        # Naprawa formatowania
+        # Naprawa formatowania (usuń $ i przecinki)
         for col in df.columns:
             if col != 'Date':
                 df[col] = df[col].astype(str).str.replace('$', '', regex=False)
@@ -147,7 +163,7 @@ def get_stock_data(ticker):
         df = df.dropna()
         df = df.sort_values('Date').reset_index(drop=True)
         
-        # Filtrowanie weekendów
+        # Filtrowanie weekendów (tylko pon-pt)
         df['Date'] = pd.to_datetime(df['Date'])
         df = df[df['Date'].dt.dayofweek < 5]
         df = df.reset_index(drop=True)
@@ -168,16 +184,19 @@ def prescan_ticker(ticker):
         if df is None or len(df) < 10:
             return None
         
-        # RVOL z ostatnich 10 dni
-        volumes = df['Volume'].values[-10:]
-        avg_vol = np.mean(volumes[:-1])
-        today_vol = volumes[-1]
-        rvol = today_vol / avg_vol if avg_vol > 0 else 0
+        # Średni wolumen z ostatnich 20 dni
+        avg_vol = df['Volume'].tail(20).mean()
+        if avg_vol == 0:
+            return None
+        
+        # Dzisiejszy RVOL
+        today_vol = df['Volume'].iloc[-1]
+        rvol = today_vol / avg_vol
         
         if rvol > PRESCAN_THRESHOLD:
             return {
                 'Ticker': ticker,
-                'RVOL': round(rvol, 2),
+                'RVOL dziś': round(rvol, 2),
                 'Cena': round(df['Close'].iloc[-1], 2)
             }
         return None
@@ -201,7 +220,7 @@ def deep_scan_ticker(ticker):
         
         # Pobierz RVOL dla ostatnich 4 dni (dzisiaj + 3 poprzednie)
         rvol_values = []
-        for i in range(1, 5):  # i = 1,2,3,4
+        for i in range(1, 5):  # i = 1,2,3,4 (1=dzisiaj, 2=wczoraj, 3=-2d, 4=-3d)
             if len(df) >= i:
                 vol = df['Volume'].iloc[-i]
                 rvol = vol / avg_volume
@@ -209,14 +228,12 @@ def deep_scan_ticker(ticker):
         
         # Sprawdź warunek: co najmniej 2 dni z 4 mają RVOL > 2
         days_over_2 = sum(1 for r in rvol_values if r > RVOL_THRESHOLD)
-        
-        # GŁÓWNE KRYTERIUM RVOL
         rvol_ok = (days_over_2 >= 2)
         
         if not rvol_ok:
             return None
         
-        # OBV
+        # OBV - On Balance Volume
         obv = [0]
         for i in range(1, len(df)):
             if df['Close'].iloc[i] > df['Close'].iloc[i-1]:
@@ -224,10 +241,11 @@ def deep_scan_ticker(ticker):
             else:
                 obv.append(obv[-1] - df['Volume'].iloc[i])
         
+        # Trend OBV (ostatnie 20 dni)
         obv_slope = np.polyfit(range(20), obv[-20:], 1)[0] if len(obv) >= 20 else 0
         obv_ok = obv_slope > 0
         
-        # A/D
+        # A/D - Accumulation/Distribution
         ad_line = [0]
         for i in range(1, len(df)):
             high, low, close = df['High'].iloc[i], df['Low'].iloc[i], df['Close'].iloc[i]
@@ -240,7 +258,7 @@ def deep_scan_ticker(ticker):
         ad_slope = np.polyfit(range(20), ad_line[-20:], 1)[0] if len(ad_line) >= 20 else 0
         ad_ok = ad_slope > 0
         
-        # CMF
+        # CMF - Chaikin Money Flow
         def calculate_cmf(data, period=20):
             if len(data) < period:
                 return 0
@@ -266,7 +284,7 @@ def deep_scan_ticker(ticker):
             'Cena': round(df['Close'].iloc[-1], 2),
             'RVOL': round(today_rvol, 2),
             'Dni>2': days_over_2,
-            'RVOL OK': '✅' if rvol_ok else '❌',
+            'RVOL OK': '✅',
             'OBV': '📈' if obv_ok else '📉',
             'A/D': '📈' if ad_ok else '📉',
             'CMF': round(cmf, 3),
@@ -281,11 +299,12 @@ def deep_scan_ticker(ticker):
 # ============================================
 
 def run_scan():
-    """Wykonuje dwuetapowe skanowanie"""
+    """Wykonuje dwuetapowe skanowanie wszystkich spółek NASDAQ"""
     
     # Pobierz listę spółek
-    with st.spinner("Pobieranie listy spółek..."):
+    with st.spinner("Pobieranie listy spółek NASDAQ..."):
         tickers = get_nasdaq_tickers()
+        st.info(f"📊 Znaleziono {len(tickers)} spółek na NASDAQ")
     
     # FAZA 1: PRESCAN
     st.markdown("---")
@@ -295,23 +314,34 @@ def run_scan():
     prescan_results = []
     progress_bar = st.progress(0)
     status_text = st.empty()
+    start_time = time.time()
     
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         futures = {executor.submit(prescan_ticker, t): t for t in tickers}
+        
         for i, future in enumerate(as_completed(futures)):
             result = future.result()
             if result:
                 prescan_results.append(result)
             
-            if i % 50 == 0:
-                progress_bar.progress(i / len(tickers))
-                status_text.text(f"Prescan: {i}/{len(tickers)} | Znaleziono: {len(prescan_results)}")
+            if i % 100 == 0:
+                elapsed = time.time() - start_time
+                rate = (i + 1) / elapsed if elapsed > 0 else 0
+                remaining = (len(tickers) - (i + 1)) / rate if rate > 0 else 0
+                
+                progress_bar.progress((i + 1) / len(tickers))
+                status_text.text(
+                    f"Skanowanie: {i+1}/{len(tickers)} | "
+                    f"Szybkość: {rate:.1f}/s | "
+                    f"Pozostało: {int(remaining//60)}m {int(remaining%60)}s | "
+                    f"Znaleziono: {len(prescan_results)}"
+                )
     
     progress_bar.empty()
     status_text.empty()
     
     if prescan_results:
-        df_prescan = pd.DataFrame(prescan_results).sort_values('RVOL', ascending=False)
+        df_prescan = pd.DataFrame(prescan_results).sort_values('RVOL dziś', ascending=False)
         st.markdown(f"<div class='stats-box'>✅ Znaleziono {len(df_prescan)} spółek w prescanie</div>", unsafe_allow_html=True)
         st.dataframe(df_prescan, use_container_width=True, hide_index=True)
     else:
@@ -331,6 +361,7 @@ def run_scan():
     
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         futures = {executor.submit(deep_scan_ticker, t): t for t in promising_tickers}
+        
         for i, future in enumerate(as_completed(futures)):
             result = future.result()
             if result:
@@ -353,7 +384,7 @@ def run_scan():
         st.download_button(
             "📥 Pobierz wyniki CSV",
             csv,
-            f"wyniki_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+            f"nasdaq_wyniki_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
             "text/csv"
         )
     else:
