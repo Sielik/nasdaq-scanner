@@ -12,6 +12,78 @@ import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from io import StringIO
 
+
+# ============================================
+# DIAGNOZA STOCKHERO - TEST NA ŻYWO
+# ============================================
+
+st.markdown("## 🔧 DIAGNOZA - TEST STOCKHERO")
+
+col1, col2, col3 = st.columns(3)
+
+with col1:
+    if st.button("1. TEST - AAPL"):
+        try:
+            import StockHero as stock
+            ticker = stock.Ticker('AAPL')
+            df = ticker.nasdaq.hist_quotes_stock
+            
+            st.write("**Surowe dane z StockHero:**")
+            st.write(f"Typ danych: {type(df)}")
+            
+            if df is not None:
+                st.write(f"Kształt: {df.shape}")
+                st.write(f"Kolumny: {df.columns.tolist()}")
+                st.write(f"Liczba wierszy: {len(df)}")
+                st.dataframe(df.head(10))
+                
+                # Sprawdź daty
+                df['Date'] = pd.to_datetime(df['Date'])
+                st.write(f"Zakres dat: {df['Date'].min()} do {df['Date'].max()}")
+                
+                # Sprawdź wolumen
+                st.write(f"Średni wolumen: {df['Volume'].mean():.0f}")
+                st.write(f"Ostatni wolumen: {df['Volume'].iloc[-1]:.0f}")
+            else:
+                st.error("StockHero zwrócił None")
+        except Exception as e:
+            st.error(f"Błąd: {e}")
+
+with col2:
+    if st.button("2. TEST - MSFT"):
+        try:
+            import StockHero as stock
+            ticker = stock.Ticker('MSFT')
+            df = ticker.nasdaq.hist_quotes_stock
+            
+            if df is not None:
+                st.write(f"MSFT: {len(df)} wierszy")
+                st.dataframe(df.head())
+            else:
+                st.error("Brak danych")
+        except Exception as e:
+            st.error(f"Błąd: {e}")
+
+with col3:
+    if st.button("3. TEST - połączenie"):
+        try:
+            import StockHero as stock
+            st.success("StockHero zaimportowane")
+            
+            # Spróbuj prostego tickera
+            ticker = stock.Ticker('AAPL')
+            st.write("Ticker utworzony")
+            
+            # Spróbuj pobrać dane
+            df = ticker.nasdaq.hist_quotes_stock
+            if df is not None:
+                st.success("Dane pobrane!")
+                st.write(f"Wiersze: {len(df)}")
+            else:
+                st.error("Brak danych")
+        except Exception as e:
+            st.error(f"Błąd: {e}")
+            
 # Konfiguracja strony
 st.set_page_config(
     page_title="NASDAQ StockHero Scanner",
