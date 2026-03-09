@@ -201,8 +201,7 @@ def get_stockhero_data(ticker):
 
 def quick_rvol_check(ticker):
     """
-    Szybkie sprawdzenie RVOL używając StockHero
-    Z pominięciem weekendów!
+    TEST: Szuka spółek z RVOL > 3 w ostatnich 4 dniach
     """
     try:
         df = get_stockhero_data(ticker)
@@ -217,25 +216,33 @@ def quick_rvol_check(ticker):
         df = df[df['Date'].dt.dayofweek < 5]
         df = df.sort_values('Date').reset_index(drop=True)
         
-        if len(df) < 10:
+        if len(df) < 5:
             return 0
         
-        # Pobierz wolumeny (ostatnie 10 DNI ROBOCZYCH)
-        volumes = df['Volume'].values[-10:]
+        # Pobierz ostatnie 5 dni (dzisiaj + 4 poprzednie)
+        last_5_volumes = df['Volume'].values[-5:]
         
-        # Oblicz RVOL (dzisiejszy / średnia z 9 poprzednich dni roboczych)
-        avg_vol = np.mean(volumes[:-1])
-        today_vol = volumes[-1]
+        # Średnia z 20 dni do obliczenia RVOL
+        avg_volume = df['Volume'].tail(20).mean()
         
-        if avg_vol == 0:
+        if avg_volume == 0:
             return 0
-            
-        rvol = today_vol / avg_vol
-        return rvol
+        
+        # Sprawdź każdy z ostatnich 5 dni
+        max_rvol = 0
+        for i, vol in enumerate(last_5_volumes):
+            rvol = vol / avg_volume
+            if rvol > max_rvol:
+                max_rvol = rvol
+        
+        # Jeśli w ostatnich 5 dniach był RVOL > 3, to obiecująca
+        if max_rvol > 3:
+            return max_rvol  # Zwracamy najwyższy RVOL
+        
+        return 0
         
     except Exception as e:
         return 0
-
 
 
 # ============================================
@@ -295,10 +302,9 @@ def clear_cache():
 
 def prescan_all_tickers(tickers):
     """
-    FAZA 1: Prescan wszystkich spółek
-    StockHero pozwala na równoległe zapytania bez limitów!
+    TEST: Prescan szukający spółek z RVOL > 3
     """
-    st.markdown('<div class="phase-indicator">🔍 FAZA 1: Prescan (RVOL > 1.5) - <span class="free-badge">💰 DARMOWE API</span></div>', 
+    st.markdown('<div class="phase-indicator">🔍 TEST: Szukam spółek z RVOL > 3 w ostatnich 4 dniach</div>', 
                 unsafe_allow_html=True)
     
     promising_tickers = []
@@ -312,13 +318,13 @@ def prescan_all_tickers(tickers):
         for i, future in enumerate(as_completed(futures)):
             ticker = futures[future]
             try:
-                rvol = future.result(timeout=15)
-                if rvol > PRESCAN_THRESHOLD:
+                max_rvol = future.result(timeout=15)
+                if max_rvol > 0:
                     promising_tickers.append(ticker)
                     promising_data.append({
                         'Ticker': ticker,
-                        'RVOL (prescan)': round(rvol, 2),
-                        'Status': 'Przechodzi do fazy 2'
+                        'Max RVOL (4d)': round(max_rvol, 2),
+                        'Status': 'TEST - ma RVOL > 3'
                     })
             except:
                 pass
@@ -329,6 +335,15 @@ def prescan_all_tickers(tickers):
     
     progress_bar.empty()
     status_text.empty()
+    
+    if promising_data:
+        st.success(f"✅ TEST: Znaleziono {len(promising_data)} spółek z RVOL > 3!")
+        
+        # Pokaż pierwsze 20 znalezionych
+        df_test = pd.DataFrame(promising_data[:20])
+        st.dataframe(df_test)
+    else:
+        st.error("❌ TEST: Nie znaleziono żadnej spółki z RVOL > 3")
     
     return promising_tickers, promising_data
 
@@ -508,10 +523,10 @@ def intelligent_scan(force_refresh=False):
     promising_tickers, promising_data = prescan_all_tickers(all_tickers)
     
     # FAZA 2: Głębokie skanowanie
-    deep_results = deep_scan_promising(promising_tickers)
-    
+    #deep_results = deep_scan_promising(promising_tickers)
+    deep_results = []
     # Zapisz do cache
-    save_to_cache(deep_results, all_tickers)
+    #save_to_cache(deep_results, all_tickers)
     
     return deep_results, promising_data, all_tickers
 
