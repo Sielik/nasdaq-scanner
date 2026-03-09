@@ -13,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 st.set_page_config(
     page_title="NASDAQ Scanner",
     page_icon="📊",
-    layout="centered"
+    layout="wide"
 )
 
 # Custom CSS
@@ -26,6 +26,24 @@ st.markdown("""
         margin-bottom: 1rem;
         font-weight: 600;
     }
+    .phase-box {
+        background-color: #f0f2f6;
+        padding: 1.5rem;
+        border-radius: 10px;
+        margin: 1rem 0;
+        border-left: 4px solid #00A3E0;
+    }
+    .phase-title {
+        font-size: 1.3rem;
+        font-weight: bold;
+        color: #00A3E0;
+        margin-bottom: 0.5rem;
+    }
+    .phase-desc {
+        color: #666;
+        margin-bottom: 1rem;
+        font-size: 0.9rem;
+    }
     .stats-box {
         background-color: #e8f4fd;
         padding: 1rem;
@@ -34,10 +52,6 @@ st.markdown("""
         margin: 1rem 0;
         font-size: 1.2rem;
         font-weight: bold;
-    }
-    .stButton button {
-        min-width: 150px;
-        font-size: 1.1rem;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -62,24 +76,40 @@ except ImportError:
     st.stop()
 
 # ============================================
-# NAGŁÓWEK
+# SIDEBAR
 # ============================================
-st.markdown('<h1 class="main-header">📊 NASDAQ Stock Scanner</h1>', unsafe_allow_html=True)
-
-# ============================================
-# PRZYCISKI
-# ============================================
-col1, col2, col3 = st.columns([1, 1, 1])
-with col1:
-    scan_button = st.button("🚀 ROZPOCZNIJ SKANOWANIE", type="primary", use_container_width=True)
-with col2:
-    stop_button = st.button("⏹️ ZATRZYMAJ", use_container_width=True)
-with col3:
-    if st.button("🧹 WYCZYŚĆ CACHE", use_container_width=True):
+with st.sidebar:
+    st.image("https://img.icons8.com/color/96/000000/stock-exchange.png", width=80)
+    st.header("🔍 NASDAQ Scanner")
+    
+    st.markdown("---")
+    st.markdown("### 🎯 Filtry")
+    
+    use_rvol = st.checkbox("Filtruj RVOL > 2", value=True)
+    use_flow = st.checkbox("Filtruj OBV/A/D/CMF > 0", value=True)
+    
+    st.markdown("---")
+    st.markdown("### 🚀 Sterowanie")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        scan_button = st.button("START", type="primary", use_container_width=True)
+    with col2:
+        stop_button = st.button("STOP", use_container_width=True)
+    
+    if st.button("🧹 Wyczyść cache", use_container_width=True):
         if os.path.exists(CACHE_FILE):
             os.remove(CACHE_FILE)
             st.success("Cache wyczyszczony!")
             st.rerun()
+    
+    st.markdown("---")
+    st.caption("Dane: StockHero (darmowe)")
+
+# ============================================
+# NAGŁÓWEK
+# ============================================
+st.markdown('<h1 class="main-header">📊 NASDAQ Stock Scanner</h1>', unsafe_allow_html=True)
 
 # ============================================
 # FUNKCJE POMOCNICZE
@@ -87,22 +117,38 @@ with col3:
 
 @st.cache_data(ttl=3600)
 def get_nasdaq_tickers():
-    """Pobiera listę spółek NASDAQ"""
+    """Pobiera listę spółek NASDAQ - TYLKO AKCJE"""
     try:
         url = "https://www.nasdaqtrader.com/dynamic/symdir/nasdaqtraded.txt"
         df = pd.read_csv(url, sep='|')
         
-        # Filtruj tylko akcje
+        # Filtruj TYLKO akcje
         stocks = df[
             (df['NASDAQ Symbol'].notna()) & 
             (df['ETF'] == 'N')
         ]
         
+        # Dodatkowe filtry jeśli kolumny istnieją
+        if 'Test Issue' in stocks.columns:
+            stocks = stocks[stocks['Test Issue'] == 'N']
+        
+        if 'Financial Status' in stocks.columns:
+            stocks = stocks[stocks['Financial Status'].notna()]
+        
         tickers = stocks['NASDAQ Symbol'].tolist()
-        all_tickers = [t.strip() for t in tickers if t.strip() and len(t.strip()) <= 5]
+        
+        # Oczyść tickery
+        all_tickers = []
+        for t in tickers:
+            t = str(t).strip()
+            # Tylko tickery z liter (1-5 znaków)
+            if t and t.isalpha() and 1 <= len(t) <= 5:
+                all_tickers.append(t)
         
         return all_tickers
-    except:
+        
+    except Exception as e:
+        st.warning(f"Błąd pobierania listy: {e}")
         return ["AAPL", "MSFT", "GOOGL", "META", "NVDA", "AMD", "TSLA", "NFLX"]
 
 def get_stock_data(ticker):
@@ -241,7 +287,12 @@ def run_scan():
     
     with st.spinner("Pobieranie listy spółek..."):
         tickers = get_nasdaq_tickers()
-        st.info(f"📊 Znaleziono {len(tickers)} spółek")
+        st.info(f"📊 Znaleziono {len(tickers)} spółek na NASDAQ")
+        
+        # Podgląd
+        with st.expander("🔍 Podgląd listy spółek"):
+            st.write(f"Pierwsze 20: {tickers[:20]}")
+            st.write(f"Ostatnie 20: {tickers[-20:]}")
     
     # PRESCAN
     st.markdown("---")
@@ -251,6 +302,7 @@ def run_scan():
     prescan_results = []
     progress_bar = st.progress(0)
     status_text = st.empty()
+    start_time = time.time()
     
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         futures = {executor.submit(prescan_ticker, t): t for t in tickers}
@@ -261,16 +313,25 @@ def run_scan():
                 prescan_results.append(result)
             
             if i % 100 == 0:
-                progress_bar.progress(i / len(tickers))
-                status_text.text(f"Prescan: {i}/{len(tickers)} | Znaleziono: {len(prescan_results)}")
+                elapsed = time.time() - start_time
+                rate = (i + 1) / elapsed if elapsed > 0 else 0
+                remaining = (len(tickers) - (i + 1)) / rate if rate > 0 else 0
+                
+                progress_bar.progress((i + 1) / len(tickers))
+                status_text.text(
+                    f"Skanowanie: {i+1}/{len(tickers)} | "
+                    f"Szybkość: {rate:.1f}/s | "
+                    f"Pozostało: {int(remaining//60)}m {int(remaining%60)}s | "
+                    f"Znaleziono: {len(prescan_results)}"
+                )
     
     progress_bar.empty()
     status_text.empty()
     
     if prescan_results:
         df_prescan = pd.DataFrame(prescan_results).sort_values('RVOL', ascending=False)
-        st.markdown(f"<div class='stats-box'>✅ Znaleziono {len(df_prescan)} spółek</div>", unsafe_allow_html=True)
-        st.dataframe(df_prescan, use_container_width=True)
+        st.markdown(f"<div class='stats-box'>✅ Znaleziono {len(df_prescan)} spółek w prescanie</div>", unsafe_allow_html=True)
+        st.dataframe(df_prescan, use_container_width=True, hide_index=True)
     else:
         st.markdown("<div class='stats-box'>❌ Brak spółek w prescanie</div>", unsafe_allow_html=True)
         return
@@ -302,13 +363,19 @@ def run_scan():
     
     if deep_results:
         df_deep = pd.DataFrame(deep_results).sort_values('RVOL', ascending=False)
-        st.markdown(f"<div class='stats-box'>✅ Znaleziono {len(df_deep)} spółek</div>", unsafe_allow_html=True)
-        st.dataframe(df_deep, use_container_width=True)
+        st.markdown(f"<div class='stats-box'>✅ Znaleziono {len(df_deep)} spółek spełniających kryteria</div>", unsafe_allow_html=True)
+        st.dataframe(df_deep, use_container_width=True, hide_index=True)
         
+        # Eksport
         csv = df_deep.to_csv(index=False)
-        st.download_button("📥 Pobierz CSV", csv, f"wyniki_{datetime.now().strftime('%Y%m%d_%H%M')}.csv")
+        st.download_button(
+            "📥 Pobierz wyniki CSV",
+            csv,
+            f"nasdaq_wyniki_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+            "text/csv"
+        )
     else:
-        st.markdown("<div class='stats-box'>❌ Brak spółek w głębokim</div>", unsafe_allow_html=True)
+        st.markdown("<div class='stats-box'>❌ Brak spółek w głębokim skanowaniu</div>", unsafe_allow_html=True)
 
 # ============================================
 # WYKONANIE
@@ -317,5 +384,5 @@ if scan_button:
     run_scan()
 
 if stop_button:
-    st.warning("⏹️ Zatrzymano")
+    st.warning("⏹️ Skanowanie zatrzymane")
     st.rerun()
