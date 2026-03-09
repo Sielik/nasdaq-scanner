@@ -111,37 +111,47 @@ with col3:
             st.rerun()
 
 # ============================================
-# FUNKCJE POBIERANIA LISTY SPÓŁEK - POPRAWIONE
+# FUNKCJE POBIERANIA LISTY SPÓŁEK - TYLKO AKCJE
 # ============================================
 
 @st.cache_data(ttl=3600)
 def get_nasdaq_tickers():
-    """Pobiera listę WSZYSTKICH spółek NASDAQ - POPRAWIONA WERSJA"""
+    """Pobiera listę spółek NASDAQ - TYLKO AKCJE ZWYKŁE"""
     try:
         # Oficjalne źródło NASDAQ Trader
         url = "https://www.nasdaqtrader.com/dynamic/symdir/nasdaqtraded.txt"
         df = pd.read_csv(url, sep='|')
         
-        # Sprawdź jakie kolumny są dostępne
+        # Sprawdź dostępne kolumny
         available_columns = df.columns.tolist()
         
-        # Filtruj tylko aktywne spółki (dostosowane do rzeczywistych kolumn)
-        if 'ETF' in available_columns:
-            # Mamy kolumnę ETF, możemy filtrować
-            stocks = df[df['NASDAQ Symbol'].notna() & (df['ETF'] == 'N')]
-        else:
-            # Nie mamy kolumny ETF, weź wszystkie z tickerem
-            stocks = df[df['NASDAQ Symbol'].notna()]
+        # Podstawowy filtr - ticker nie może być pusty
+        stocks = df[df['NASDAQ Symbol'].notna()]
         
+        # Filtruj TYLKO akcje (nie ETF)
+        if 'ETF' in available_columns:
+            stocks = stocks[stocks['ETF'] == 'N']
+        
+        # Filtruj testowe instrumenty
+        if 'Test Issue' in available_columns:
+            stocks = stocks[stocks['Test Issue'] == 'N']
+        
+        # Tylko aktywne spółki
+        if 'Financial Status' in available_columns:
+            stocks = stocks[stocks['Financial Status'].notna()]
+        
+        # Pobierz tickery
         tickers = stocks['NASDAQ Symbol'].tolist()
-        # Zwracamy WSZYSTKIE spółki bez ograniczeń
         all_tickers = [t.strip() for t in tickers if t.strip()]
+        
+        # Filtruj po długości tickera (akcje mają zwykle 1-5 znaków)
+        all_tickers = [t for t in all_tickers if 1 <= len(t) <= 5]
         
         return all_tickers
         
     except Exception as e:
         st.warning(f"Błąd pobierania listy: {e}")
-        # Lista awaryjna gdyby NASDAQ Trader nie działał
+        # Lista awaryjna
         return ["AAPL", "MSFT", "GOOGL", "META", "NVDA", "AMD", "TSLA", "NFLX"]
 
 # ============================================
