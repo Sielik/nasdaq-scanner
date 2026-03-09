@@ -90,36 +90,68 @@ with st.expander("🔧 TESTY", expanded=True):
     col1, col2, col3 = st.columns(3)
     
     with col1:
-    if st.button("🔍 TEST - AAPL (naprawiony)"):
-        with st.spinner("Sprawdzam AAPL..."):
+        if st.button("🔍 TEST - AAPL (naprawiony)"):
+            with st.spinner("Sprawdzam AAPL..."):
+                try:
+                    ticker = stock.Ticker('AAPL')
+                    df = ticker.nasdaq.hist_quotes_stock
+                    
+                    st.write("**Przed naprawą:**")
+                    st.dataframe(df.head(3))
+                    
+                    # NAPRAWA
+                    for col in df.columns:
+                        if col != 'Date':
+                            df[col] = df[col].astype(str).str.replace('$', '', regex=False)
+                            df[col] = df[col].str.replace(',', '', regex=False)
+                            df[col] = pd.to_numeric(df[col], errors='coerce')
+                    
+                    df = df.dropna()
+                    
+                    st.write("**Po naprawie:**")
+                    st.dataframe(df.head(3))
+                    
+                    # Oblicz RVOL
+                    df = df.sort_values('Date', ascending=False).head(10)
+                    volumes = df['Volume'].values
+                    avg_vol = np.mean(volumes[1:])
+                    today_vol = volumes[0]
+                    rvol = today_vol / avg_vol if avg_vol > 0 else 0
+                    
+                    st.success(f"✅ RVOL = {rvol:.2f}")
+                    
+                except Exception as e:
+                    st.error(f"Błąd: {e}")
+    
+    with col2:
+        if st.button("📊 TEST - MSFT"):
+            with st.spinner("Sprawdzam MSFT..."):
+                try:
+                    ticker = stock.Ticker('MSFT')
+                    df = ticker.nasdaq.hist_quotes_stock
+                    
+                    if df is not None:
+                        st.write(f"MSFT: {len(df)} wierszy")
+                        st.dataframe(df.head())
+                    else:
+                        st.error("Brak danych")
+                except Exception as e:
+                    st.error(f"Błąd: {e}")
+    
+    with col3:
+        if st.button("🌐 TEST - połączenie"):
             try:
+                import StockHero as stock
+                st.success("✅ StockHero zaimportowane")
+                
                 ticker = stock.Ticker('AAPL')
+                st.write("✅ Ticker utworzony")
+                
                 df = ticker.nasdaq.hist_quotes_stock
-                
-                st.write("**Przed naprawą:**")
-                st.dataframe(df.head(3))
-                
-                # NAPRAWA
-                for col in df.columns:
-                    if col != 'Date':
-                        df[col] = df[col].astype(str).str.replace('$', '', regex=False)
-                        df[col] = df[col].str.replace(',', '', regex=False)
-                        df[col] = pd.to_numeric(df[col], errors='coerce')
-                
-                df = df.dropna()
-                
-                st.write("**Po naprawie:**")
-                st.dataframe(df.head(3))
-                
-                # Oblicz RVOL
-                df = df.sort_values('Date', ascending=False).head(10)
-                volumes = df['Volume'].values
-                avg_vol = np.mean(volumes[1:])
-                today_vol = volumes[0]
-                rvol = today_vol / avg_vol if avg_vol > 0 else 0
-                
-                st.success(f"✅ RVOL = {rvol:.2f}")
-                
+                if df is not None:
+                    st.success(f"✅ Dane pobrane! Wiersze: {len(df)}")
+                else:
+                    st.error("❌ Brak danych")
             except Exception as e:
                 st.error(f"Błąd: {e}")
 
@@ -207,21 +239,6 @@ def get_stockhero_data(ticker):
         
     except Exception as e:
         return None
-        
-        # Naprawa danych - usuń przecinki i konwertuj na float
-        df['Volume'] = df['Volume'].astype(str).str.replace(',', '').astype(float)
-        df['Close'] = df['Close/Last'].astype(str).str.replace(',', '').astype(float)
-        df['Open'] = df['Open'].astype(str).str.replace(',', '').astype(float)
-        df['High'] = df['High'].astype(str).str.replace(',', '').astype(float)
-        df['Low'] = df['Low'].astype(str).str.replace(',', '').astype(float)
-        
-        df = df.sort_values('Date').reset_index(drop=True)
-        df['Ticker'] = ticker
-        
-        return df
-        
-    except Exception as e:
-        return None
 
 # ============================================
 # FUNKCJA QUICK RVOL CHECK (PRESCAN)
@@ -261,10 +278,6 @@ def quick_rvol_check(ticker):
                 rvol = vol / avg_volume
                 if rvol > max_rvol:
                     max_rvol = rvol
-        
-        # Dla testu - pokaż w konsoli (opcjonalnie)
-        if max_rvol > 0:
-            print(f"{ticker}: max RVOL = {max_rvol:.2f}")
         
         # Jeśli max RVOL > 3, zwróć go
         if max_rvol > PRESCAN_THRESHOLD:
@@ -338,8 +351,11 @@ def prescan_all_tickers(tickers):
     status_text = st.empty()
     found_counter = 0
     
+    # Tylko pierwsze 500 na test
+    scan_tickers = tickers[:500]
+    
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        futures = {executor.submit(quick_rvol_check, t): t for t in tickers[:500]}  # Tylko 500 na test
+        futures = {executor.submit(quick_rvol_check, t): t for t in scan_tickers}
         
         for i, future in enumerate(as_completed(futures)):
             ticker = futures[future]
@@ -357,8 +373,8 @@ def prescan_all_tickers(tickers):
                 pass
             
             if i % 10 == 0:
-                progress_bar.progress(i / min(500, len(tickers)))
-                status_text.text(f"Prescan: {i}/500 | Znaleziono: {found_counter}")
+                progress_bar.progress(i / len(scan_tickers))
+                status_text.text(f"Prescan: {i}/{len(scan_tickers)} | Znaleziono: {found_counter}")
     
     progress_bar.empty()
     status_text.empty()
