@@ -17,26 +17,39 @@ st.subheader("🔍 TESTY POŁĄCZENIA")
 col1, col2 = st.columns(2)
 
 with col1:
-    if st.button("1. TEST - RVOL dla AAPL"):
-        try:
-            url = "https://stooq.pl/q/d/l/?s=aapl.us&i=d"
-            response = requests.get(url, timeout=5)
-            df = pd.read_csv(StringIO(response.text))
-            
-            if not df.empty:
-                wolumen = df['Wolumen'].values[-5:]
-                avg = wolumen.mean()
-                today = wolumen[-1]
-                rvol = today / avg
-                
-                st.success(f"✅ Połączenie działa!")
-                st.write(f"Średni wolumen (5d): {avg:.0f}")
-                st.write(f"Dzisiejszy wolumen: {today:.0f}")
-                st.write(f"RVOL: {rvol:.2f}")
-            else:
-                st.error("Brak danych")
-        except Exception as e:
-            st.error(f"Błąd: {e}")
+    if st.button("1. TEST - RVOL dla AAPL (SZCZEGÓŁOWY)"):
+    try:
+        ticker = "AAPL"
+        url = f"https://stooq.pl/q/d/l/?s={ticker.lower()}.us&i=d"
+        
+        st.write(f"**URL:** {url}")
+        
+        # Pobierz dane
+        response = requests.get(url, timeout=10)
+        st.write(f"**Status HTTP:** {response.status_code}")
+        
+        # Pokaż nagłówki odpowiedzi
+        st.write("**Nagłówki:**")
+        st.json(dict(response.headers))
+        
+        # Pokaż pierwsze 500 znaków odpowiedzi
+        st.write("**Treść odpowiedzi (pierwsze 500 znaków):**")
+        st.code(response.text[:500])
+        
+        # Sprawdź długość
+        st.write(f"**Długość odpowiedzi:** {len(response.text)} znaków")
+        
+        # Jeśli to HTML, pokaż tytuł
+        if "<html" in response.text.lower():
+            st.warning("To wygląda na stronę HTML, nie CSV!")
+            # Znajdź tytuł strony
+            import re
+            title = re.search(r"<title>(.*?)</title>", response.text)
+            if title:
+                st.write(f"**Tytuł strony:** {title.group(1)}")
+        
+    except Exception as e:
+        st.error(f"Błąd: {e}")
 
 with col2:
     if st.button("2. TEST - połączenie"):
@@ -124,7 +137,52 @@ CACHE_MAX_AGE_HOURS = 12
 
 def quick_rvol_check(ticker):
     """
-    Szybkie sprawdzenie RVOL
+    FAZA 1: Szybkie sprawdzenie RVOL używając Alpha Vantage
+    """
+    try:
+        # Alpha Vantage API
+        api_key = "Y1XLMK79ZJ9CWKSU"
+        url = f"https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={ticker}&apikey={api_key}&outputsize=compact"
+        
+        response = requests.get(url, timeout=10)
+        data = response.json()
+        
+        # Sprawdź czy są dane
+        if "Time Series (Daily)" not in data:
+            return 0
+        
+        # Pobierz ostatnie 10 dni
+        time_series = data["Time Series (Daily)"]
+        dates = sorted(time_series.keys(), reverse=True)[:10]
+        
+        if len(dates) < 5:
+            return 0
+        
+        # Pobierz wolumeny
+        volumes = []
+        for date in dates:
+            volumes.append(float(time_series[date]["5. volume"]))
+        
+        # Oblicz RVOL
+        avg_vol = np.mean(volumes)
+        today_vol = volumes[0]
+        
+        return today_vol / avg_vol if avg_vol > 0 else 0
+        
+    except Exception as e:
+        return 0
+        
+        # Dla debug - pokaż w sidebarze
+        st.sidebar.success(f"{ticker}: RVOL={rvol:.2f}, kolumna={volume_col}")
+        
+        return rvol
+        
+    except Exception as e:
+        st.sidebar.error(f"Błąd dla {ticker}: {e}")
+        return 0
+def quick_rvol_check(ticker):
+    """
+    FAZA 1: Szybkie sprawdzenie RVOL - NAPRAWIONA WERSJA
     """
     try:
         url = f"https://stooq.pl/q/d/l/?s={ticker.lower()}.us&i=d"
@@ -134,41 +192,3536 @@ def quick_rvol_check(ticker):
         if response.status_code != 200:
             return 0
         
+        # Wczytaj CSV
         df = pd.read_csv(StringIO(response.text))
         
         if df.empty or len(df) < 5:
             return 0
         
-        # Znajdź kolumnę z wolumenem
+        # DEBUG - zobaczmy kolumny (możesz potem usunąć)
+        st.sidebar.write(f"Kolumny dla {ticker}: {df.columns.tolist()}")
+        
+        # Znajdź kolumnę z wolumenem - różne możliwe nazwy
         volume_col = None
-        possible_names = ['Wolumen', 'Volume', 'Wol', 'Vol']
+        
+        # Lista możliwych nazw kolumn w stooq.pl
+        possible_names = ['Wolumen', 'Volume', 'Wol', 'Vol', 'Obrot', 'Obrót']
         
         for col in df.columns:
             if col in possible_names:
                 volume_col = col
                 break
         
-        if volume_col is None and len(df.columns) >= 6:
-            volume_col = df.columns[5]
+        # Jeśli nie znaleziono po nazwie, sprawdź typ danych
+        if volume_col is None:
+            for col in df.columns:
+                if df[col].dtype in ['int64', 'float64'] and col not in ['Data', 'Date']:
+                    # Prawdopodobnie to wolumen
+                    volume_col = col
+                    break
+        
+        # Ostateczność - ostatnia kolumna numeryczna
+        if volume_col is None:
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) > 0:
+                volume_col = numeric_cols[-1]  # Ostatnia kolumna numeryczna
         
         if volume_col is None:
+            st.sidebar.error(f"Nie znaleziono kolumny z wolumenem dla {ticker}")
             return 0
         
+        # Pobierz wolumeny
         volumes = df[volume_col].values
+        
+        # Konwersja na liczby
         volumes = pd.to_numeric(volumes, errors='coerce')
         volumes = volumes[~np.isnan(volumes)]
         
         if len(volumes) < 5:
             return 0
         
+        # Oblicz RVOL
         avg_vol = np.mean(volumes)
         today_vol = volumes[-1]
         
-        return today_vol / avg_vol if avg_vol > 0 else 0
+        if avg_vol == 0:
+            return 0
+        
+        rvol = today_vol / avg_vol
+        
+        # Dla debug - pokaż w sidebarze
+        st.sidebar.success(f"{ticker}: RVOL={rvol:.2f}, kolumna={volume_col}")
+        
+        return rvol
         
     except Exception as e:
+        st.sidebar.error(f"Błąd dla {ticker}: {e}")
         return 0
-
+def quick_rvol_check(ticker):
+    """
+    FAZA 1: Szybkie sprawdzenie RVOL - NAPRAWIONA WERSJA
+    """
+    try:
+        url = f"https://stooq.pl/q/d/l/?s={ticker.lower()}.us&i=d"
+        
+        response = requests.get(url, timeout=TIMEOUT_SECONDS)
+        
+        if response.status_code != 200:
+            return 0
+        
+        # Wczytaj CSV
+        df = pd.read_csv(StringIO(response.text))
+        
+        if df.empty or len(df) < 5:
+            return 0
+        
+        # DEBUG - zobaczmy kolumny (możesz potem usunąć)
+        st.sidebar.write(f"Kolumny dla {ticker}: {df.columns.tolist()}")
+        
+        # Znajdź kolumnę z wolumenem - różne możliwe nazwy
+        volume_col = None
+        
+        # Lista możliwych nazw kolumn w stooq.pl
+        possible_names = ['Wolumen', 'Volume', 'Wol', 'Vol', 'Obrot', 'Obrót']
+        
+        for col in df.columns:
+            if col in possible_names:
+                volume_col = col
+                break
+        
+        # Jeśli nie znaleziono po nazwie, sprawdź typ danych
+        if volume_col is None:
+            for col in df.columns:
+                if df[col].dtype in ['int64', 'float64'] and col not in ['Data', 'Date']:
+                    # Prawdopodobnie to wolumen
+                    volume_col = col
+                    break
+        
+        # Ostateczność - ostatnia kolumna numeryczna
+        if volume_col is None:
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) > 0:
+                volume_col = numeric_cols[-1]  # Ostatnia kolumna numeryczna
+        
+        if volume_col is None:
+            st.sidebar.error(f"Nie znaleziono kolumny z wolumenem dla {ticker}")
+            return 0
+        
+        # Pobierz wolumeny
+        volumes = df[volume_col].values
+        
+        # Konwersja na liczby
+        volumes = pd.to_numeric(volumes, errors='coerce')
+        volumes = volumes[~np.isnan(volumes)]
+        
+        if len(volumes) < 5:
+            return 0
+        
+        # Oblicz RVOL
+        avg_vol = np.mean(volumes)
+        today_vol = volumes[-1]
+        
+        if avg_vol == 0:
+            return 0
+        
+        rvol = today_vol / avg_vol
+        
+        # Dla debug - pokaż w sidebarze
+        st.sidebar.success(f"{ticker}: RVOL={rvol:.2f}, kolumna={volume_col}")
+        
+        return rvol
+        
+    except Exception as e:
+        st.sidebar.error(f"Błąd dla {ticker}: {e}")
+        return 0
+def quick_rvol_check(ticker):
+    """
+    FAZA 1: Szybkie sprawdzenie RVOL - NAPRAWIONA WERSJA
+    """
+    try:
+        url = f"https://stooq.pl/q/d/l/?s={ticker.lower()}.us&i=d"
+        
+        response = requests.get(url, timeout=TIMEOUT_SECONDS)
+        
+        if response.status_code != 200:
+            return 0
+        
+        # Wczytaj CSV
+        df = pd.read_csv(StringIO(response.text))
+        
+        if df.empty or len(df) < 5:
+            return 0
+        
+        # DEBUG - zobaczmy kolumny (możesz potem usunąć)
+        st.sidebar.write(f"Kolumny dla {ticker}: {df.columns.tolist()}")
+        
+        # Znajdź kolumnę z wolumenem - różne możliwe nazwy
+        volume_col = None
+        
+        # Lista możliwych nazw kolumn w stooq.pl
+        possible_names = ['Wolumen', 'Volume', 'Wol', 'Vol', 'Obrot', 'Obrót']
+        
+        for col in df.columns:
+            if col in possible_names:
+                volume_col = col
+                break
+        
+        # Jeśli nie znaleziono po nazwie, sprawdź typ danych
+        if volume_col is None:
+            for col in df.columns:
+                if df[col].dtype in ['int64', 'float64'] and col not in ['Data', 'Date']:
+                    # Prawdopodobnie to wolumen
+                    volume_col = col
+                    break
+        
+        # Ostateczność - ostatnia kolumna numeryczna
+        if volume_col is None:
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) > 0:
+                volume_col = numeric_cols[-1]  # Ostatnia kolumna numeryczna
+        
+        if volume_col is None:
+            st.sidebar.error(f"Nie znaleziono kolumny z wolumenem dla {ticker}")
+            return 0
+        
+        # Pobierz wolumeny
+        volumes = df[volume_col].values
+        
+        # Konwersja na liczby
+        volumes = pd.to_numeric(volumes, errors='coerce')
+        volumes = volumes[~np.isnan(volumes)]
+        
+        if len(volumes) < 5:
+            return 0
+        
+        # Oblicz RVOL
+        avg_vol = np.mean(volumes)
+        today_vol = volumes[-1]
+        
+        if avg_vol == 0:
+            return 0
+        
+        rvol = today_vol / avg_vol
+        
+        # Dla debug - pokaż w sidebarze
+        st.sidebar.success(f"{ticker}: RVOL={rvol:.2f}, kolumna={volume_col}")
+        
+        return rvol
+        
+    except Exception as e:
+        st.sidebar.error(f"Błąd dla {ticker}: {e}")
+        return 0
+def quick_rvol_check(ticker):
+    """
+    FAZA 1: Szybkie sprawdzenie RVOL - NAPRAWIONA WERSJA
+    """
+    try:
+        url = f"https://stooq.pl/q/d/l/?s={ticker.lower()}.us&i=d"
+        
+        response = requests.get(url, timeout=TIMEOUT_SECONDS)
+        
+        if response.status_code != 200:
+            return 0
+        
+        # Wczytaj CSV
+        df = pd.read_csv(StringIO(response.text))
+        
+        if df.empty or len(df) < 5:
+            return 0
+        
+        # DEBUG - zobaczmy kolumny (możesz potem usunąć)
+        st.sidebar.write(f"Kolumny dla {ticker}: {df.columns.tolist()}")
+        
+        # Znajdź kolumnę z wolumenem - różne możliwe nazwy
+        volume_col = None
+        
+        # Lista możliwych nazw kolumn w stooq.pl
+        possible_names = ['Wolumen', 'Volume', 'Wol', 'Vol', 'Obrot', 'Obrót']
+        
+        for col in df.columns:
+            if col in possible_names:
+                volume_col = col
+                break
+        
+        # Jeśli nie znaleziono po nazwie, sprawdź typ danych
+        if volume_col is None:
+            for col in df.columns:
+                if df[col].dtype in ['int64', 'float64'] and col not in ['Data', 'Date']:
+                    # Prawdopodobnie to wolumen
+                    volume_col = col
+                    break
+        
+        # Ostateczność - ostatnia kolumna numeryczna
+        if volume_col is None:
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) > 0:
+                volume_col = numeric_cols[-1]  # Ostatnia kolumna numeryczna
+        
+        if volume_col is None:
+            st.sidebar.error(f"Nie znaleziono kolumny z wolumenem dla {ticker}")
+            return 0
+        
+        # Pobierz wolumeny
+        volumes = df[volume_col].values
+        
+        # Konwersja na liczby
+        volumes = pd.to_numeric(volumes, errors='coerce')
+        volumes = volumes[~np.isnan(volumes)]
+        
+        if len(volumes) < 5:
+            return 0
+        
+        # Oblicz RVOL
+        avg_vol = np.mean(volumes)
+        today_vol = volumes[-1]
+        
+        if avg_vol == 0:
+            return 0
+        
+        rvol = today_vol / avg_vol
+        
+        # Dla debug - pokaż w sidebarze
+        st.sidebar.success(f"{ticker}: RVOL={rvol:.2f}, kolumna={volume_col}")
+        
+        return rvol
+        
+    except Exception as e:
+        st.sidebar.error(f"Błąd dla {ticker}: {e}")
+        return 0
+def quick_rvol_check(ticker):
+    """
+    FAZA 1: Szybkie sprawdzenie RVOL - NAPRAWIONA WERSJA
+    """
+    try:
+        url = f"https://stooq.pl/q/d/l/?s={ticker.lower()}.us&i=d"
+        
+        response = requests.get(url, timeout=TIMEOUT_SECONDS)
+        
+        if response.status_code != 200:
+            return 0
+        
+        # Wczytaj CSV
+        df = pd.read_csv(StringIO(response.text))
+        
+        if df.empty or len(df) < 5:
+            return 0
+        
+        # DEBUG - zobaczmy kolumny (możesz potem usunąć)
+        st.sidebar.write(f"Kolumny dla {ticker}: {df.columns.tolist()}")
+        
+        # Znajdź kolumnę z wolumenem - różne możliwe nazwy
+        volume_col = None
+        
+        # Lista możliwych nazw kolumn w stooq.pl
+        possible_names = ['Wolumen', 'Volume', 'Wol', 'Vol', 'Obrot', 'Obrót']
+        
+        for col in df.columns:
+            if col in possible_names:
+                volume_col = col
+                break
+        
+        # Jeśli nie znaleziono po nazwie, sprawdź typ danych
+        if volume_col is None:
+            for col in df.columns:
+                if df[col].dtype in ['int64', 'float64'] and col not in ['Data', 'Date']:
+                    # Prawdopodobnie to wolumen
+                    volume_col = col
+                    break
+        
+        # Ostateczność - ostatnia kolumna numeryczna
+        if volume_col is None:
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) > 0:
+                volume_col = numeric_cols[-1]  # Ostatnia kolumna numeryczna
+        
+        if volume_col is None:
+            st.sidebar.error(f"Nie znaleziono kolumny z wolumenem dla {ticker}")
+            return 0
+        
+        # Pobierz wolumeny
+        volumes = df[volume_col].values
+        
+        # Konwersja na liczby
+        volumes = pd.to_numeric(volumes, errors='coerce')
+        volumes = volumes[~np.isnan(volumes)]
+        
+        if len(volumes) < 5:
+            return 0
+        
+        # Oblicz RVOL
+        avg_vol = np.mean(volumes)
+        today_vol = volumes[-1]
+        
+        if avg_vol == 0:
+            return 0
+        
+        rvol = today_vol / avg_vol
+        
+        # Dla debug - pokaż w sidebarze
+        st.sidebar.success(f"{ticker}: RVOL={rvol:.2f}, kolumna={volume_col}")
+        
+        return rvol
+        
+    except Exception as e:
+        st.sidebar.error(f"Błąd dla {ticker}: {e}")
+        return 0/d/l/?s={ticker.lower()}.us&i=d"
+def quick_rvol_check(ticker):
+    """
+    FAZA 1: Szybkie sprawdzenie RVOL - NAPRAWIONA WERSJA
+    """
+    try:
+        url = f"https://stooq.pl/q/d/l/?s={ticker.lower()}.us&i=d"
+        
+        response = requests.get(url, timeout=TIMEOUT_SECONDS)
+        
+        if response.status_code != 200:
+            return 0
+        
+        # Wczytaj CSV
+        df = pd.read_csv(StringIO(response.text))
+        
+        if df.empty or len(df) < 5:
+            return 0
+        
+        # DEBUG - zobaczmy kolumny (możesz potem usunąć)
+        st.sidebar.write(f"Kolumny dla {ticker}: {df.columns.tolist()}")
+        
+        # Znajdź kolumnę z wolumenem - różne możliwe nazwy
+        volume_col = None
+        
+        # Lista możliwych nazw kolumn w stooq.pl
+        possible_names = ['Wolumen', 'Volume', 'Wol', 'Vol', 'Obrot', 'Obrót']
+        
+        for col in df.columns:
+            if col in possible_names:
+                volume_col = col
+                break
+        
+        # Jeśli nie znaleziono po nazwie, sprawdź typ danych
+        if volume_col is None:
+            for col in df.columns:
+                if df[col].dtype in ['int64', 'float64'] and col not in ['Data', 'Date']:
+                    # Prawdopodobnie to wolumen
+                    volume_col = col
+                    break
+        
+        # Ostateczność - ostatnia kolumna numeryczna
+        if volume_col is None:
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) > 0:
+                volume_col = numeric_cols[-1]  # Ostatnia kolumna numeryczna
+        
+        if volume_col is None:
+            st.sidebar.error(f"Nie znaleziono kolumny z wolumenem dla {ticker}")
+            return 0
+        
+        # Pobierz wolumeny
+        volumes = df[volume_col].values
+        
+        # Konwersja na liczby
+        volumes = pd.to_numeric(volumes, errors='coerce')
+        volumes = volumes[~np.isnan(volumes)]
+        
+        if len(volumes) < 5:
+            return 0
+        
+        # Oblicz RVOL
+        avg_vol = np.mean(volumes)
+        today_vol = volumes[-1]
+        
+        if avg_vol == 0:
+            return 0
+        
+        rvol = today_vol / avg_vol
+        
+        # Dla debug - pokaż w sidebarze
+        st.sidebar.success(f"{ticker}: RVOL={rvol:.2f}, kolumna={volume_col}")
+        
+        return rvol
+        
+    except Exception as e:
+        st.sidebar.error(f"Błąd dla {ticker}: {e}")
+        return 0
+def quick_rvol_check(ticker):
+    """
+    FAZA 1: Szybkie sprawdzenie RVOL - NAPRAWIONA WERSJA
+    """
+    try:
+        url = f"https://stooq.pl/q/d/l/?s={ticker.lower()}.us&i=d"
+        
+        response = requests.get(url, timeout=TIMEOUT_SECONDS)
+        
+        if response.status_code != 200:
+            return 0
+        
+        # Wczytaj CSV
+        df = pd.read_csv(StringIO(response.text))
+        
+        if df.empty or len(df) < 5:
+            return 0
+        
+        # DEBUG - zobaczmy kolumny (możesz potem usunąć)
+        st.sidebar.write(f"Kolumny dla {ticker}: {df.columns.tolist()}")
+        
+        # Znajdź kolumnę z wolumenem - różne możliwe nazwy
+        volume_col = None
+        
+        # Lista możliwych nazw kolumn w stooq.pl
+        possible_names = ['Wolumen', 'Volume', 'Wol', 'Vol', 'Obrot', 'Obrót']
+        
+        for col in df.columns:
+            if col in possible_names:
+                volume_col = col
+                break
+        
+        # Jeśli nie znaleziono po nazwie, sprawdź typ danych
+        if volume_col is None:
+            for col in df.columns:
+                if df[col].dtype in ['int64', 'float64'] and col not in ['Data', 'Date']:
+                    # Prawdopodobnie to wolumen
+                    volume_col = col
+                    break
+        
+        # Ostateczność - ostatnia kolumna numeryczna
+        if volume_col is None:
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) > 0:
+                volume_col = numeric_cols[-1]  # Ostatnia kolumna numeryczna
+        
+        if volume_col is None:
+            st.sidebar.error(f"Nie znaleziono kolumny z wolumenem dla {ticker}")
+            return 0
+        
+        # Pobierz wolumeny
+        volumes = df[volume_col].values
+        
+        # Konwersja na liczby
+        volumes = pd.to_numeric(volumes, errors='coerce')
+        volumes = volumes[~np.isnan(volumes)]
+        
+        if len(volumes) < 5:
+            return 0
+        
+        # Oblicz RVOL
+        avg_vol = np.mean(volumes)
+        today_vol = volumes[-1]
+        
+        if avg_vol == 0:
+            return 0
+        
+        rvol = today_vol / avg_vol
+        
+        # Dla debug - pokaż w sidebarze
+        st.sidebar.success(f"{ticker}: RVOL={rvol:.2f}, kolumna={volume_col}")
+        
+        return rvol
+        
+    except Exception as e:
+        st.sidebar.error(f"Błąd dla {ticker}: {e}")
+        return 0l, timeout=TIMEOUT_SECONDS)
+def quick_rvol_check(ticker):
+    """
+    FAZA 1: Szybkie sprawdzenie RVOL - NAPRAWIONA WERSJA
+    """
+    try:
+        url = f"https://stooq.pl/q/d/l/?s={ticker.lower()}.us&i=d"
+        
+        response = requests.get(url, timeout=TIMEOUT_SECONDS)
+        
+        if response.status_code != 200:
+            return 0
+        
+        # Wczytaj CSV
+        df = pd.read_csv(StringIO(response.text))
+        
+        if df.empty or len(df) < 5:
+            return 0
+        
+        # DEBUG - zobaczmy kolumny (możesz potem usunąć)
+        st.sidebar.write(f"Kolumny dla {ticker}: {df.columns.tolist()}")
+        
+        # Znajdź kolumnę z wolumenem - różne możliwe nazwy
+        volume_col = None
+        
+        # Lista możliwych nazw kolumn w stooq.pl
+        possible_names = ['Wolumen', 'Volume', 'Wol', 'Vol', 'Obrot', 'Obrót']
+        
+        for col in df.columns:
+            if col in possible_names:
+                volume_col = col
+                break
+        
+        # Jeśli nie znaleziono po nazwie, sprawdź typ danych
+        if volume_col is None:
+            for col in df.columns:
+                if df[col].dtype in ['int64', 'float64'] and col not in ['Data', 'Date']:
+                    # Prawdopodobnie to wolumen
+                    volume_col = col
+                    break
+        
+        # Ostateczność - ostatnia kolumna numeryczna
+        if volume_col is None:
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) > 0:
+                volume_col = numeric_cols[-1]  # Ostatnia kolumna numeryczna
+        
+        if volume_col is None:
+            st.sidebar.error(f"Nie znaleziono kolumny z wolumenem dla {ticker}")
+            return 0
+        
+        # Pobierz wolumeny
+        volumes = df[volume_col].values
+        
+        # Konwersja na liczby
+        volumes = pd.to_numeric(volumes, errors='coerce')
+        volumes = volumes[~np.isnan(volumes)]
+        
+        if len(volumes) < 5:
+            return 0
+        
+        # Oblicz RVOL
+        avg_vol = np.mean(volumes)
+        today_vol = volumes[-1]
+        
+        if avg_vol == 0:
+            return 0
+        
+        rvol = today_vol / avg_vol
+        
+        # Dla debug - pokaż w sidebarze
+        st.sidebar.success(f"{ticker}: RVOL={rvol:.2f}, kolumna={volume_col}")
+        
+        return rvol
+        
+    except Exception as e:
+        st.sidebar.error(f"Błąd dla {ticker}: {e}")
+        return 0
+def quick_rvol_check(ticker):
+    """
+    FAZA 1: Szybkie sprawdzenie RVOL - NAPRAWIONA WERSJA
+    """
+    try:
+        url = f"https://stooq.pl/q/d/l/?s={ticker.lower()}.us&i=d"
+        
+        response = requests.get(url, timeout=TIMEOUT_SECONDS)
+        
+        if response.status_code != 200:
+            return 0
+        
+        # Wczytaj CSV
+        df = pd.read_csv(StringIO(response.text))
+        
+        if df.empty or len(df) < 5:
+            return 0
+        
+        # DEBUG - zobaczmy kolumny (możesz potem usunąć)
+        st.sidebar.write(f"Kolumny dla {ticker}: {df.columns.tolist()}")
+        
+        # Znajdź kolumnę z wolumenem - różne możliwe nazwy
+        volume_col = None
+        
+        # Lista możliwych nazw kolumn w stooq.pl
+        possible_names = ['Wolumen', 'Volume', 'Wol', 'Vol', 'Obrot', 'Obrót']
+        
+        for col in df.columns:
+            if col in possible_names:
+                volume_col = col
+                break
+        
+        # Jeśli nie znaleziono po nazwie, sprawdź typ danych
+        if volume_col is None:
+            for col in df.columns:
+                if df[col].dtype in ['int64', 'float64'] and col not in ['Data', 'Date']:
+                    # Prawdopodobnie to wolumen
+                    volume_col = col
+                    break
+        
+        # Ostateczność - ostatnia kolumna numeryczna
+        if volume_col is None:
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) > 0:
+                volume_col = numeric_cols[-1]  # Ostatnia kolumna numeryczna
+        
+        if volume_col is None:
+            st.sidebar.error(f"Nie znaleziono kolumny z wolumenem dla {ticker}")
+            return 0
+        
+        # Pobierz wolumeny
+        volumes = df[volume_col].values
+        
+        # Konwersja na liczby
+        volumes = pd.to_numeric(volumes, errors='coerce')
+        volumes = volumes[~np.isnan(volumes)]
+        
+        if len(volumes) < 5:
+            return 0
+        
+        # Oblicz RVOL
+        avg_vol = np.mean(volumes)
+        today_vol = volumes[-1]
+        
+        if avg_vol == 0:
+            return 0
+        
+        rvol = today_vol / avg_vol
+        
+        # Dla debug - pokaż w sidebarze
+        st.sidebar.success(f"{ticker}: RVOL={rvol:.2f}, kolumna={volume_col}")
+        
+        return rvol
+        
+    except Exception as e:
+        st.sidebar.error(f"Błąd dla {ticker}: {e}")
+        return 0 200:
+def quick_rvol_check(ticker):
+    """
+    FAZA 1: Szybkie sprawdzenie RVOL - NAPRAWIONA WERSJA
+    """
+    try:
+        url = f"https://stooq.pl/q/d/l/?s={ticker.lower()}.us&i=d"
+        
+        response = requests.get(url, timeout=TIMEOUT_SECONDS)
+        
+        if response.status_code != 200:
+            return 0
+        
+        # Wczytaj CSV
+        df = pd.read_csv(StringIO(response.text))
+        
+        if df.empty or len(df) < 5:
+            return 0
+        
+        # DEBUG - zobaczmy kolumny (możesz potem usunąć)
+        st.sidebar.write(f"Kolumny dla {ticker}: {df.columns.tolist()}")
+        
+        # Znajdź kolumnę z wolumenem - różne możliwe nazwy
+        volume_col = None
+        
+        # Lista możliwych nazw kolumn w stooq.pl
+        possible_names = ['Wolumen', 'Volume', 'Wol', 'Vol', 'Obrot', 'Obrót']
+        
+        for col in df.columns:
+            if col in possible_names:
+                volume_col = col
+                break
+        
+        # Jeśli nie znaleziono po nazwie, sprawdź typ danych
+        if volume_col is None:
+            for col in df.columns:
+                if df[col].dtype in ['int64', 'float64'] and col not in ['Data', 'Date']:
+                    # Prawdopodobnie to wolumen
+                    volume_col = col
+                    break
+        
+        # Ostateczność - ostatnia kolumna numeryczna
+        if volume_col is None:
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) > 0:
+                volume_col = numeric_cols[-1]  # Ostatnia kolumna numeryczna
+        
+        if volume_col is None:
+            st.sidebar.error(f"Nie znaleziono kolumny z wolumenem dla {ticker}")
+            return 0
+        
+        # Pobierz wolumeny
+        volumes = df[volume_col].values
+        
+        # Konwersja na liczby
+        volumes = pd.to_numeric(volumes, errors='coerce')
+        volumes = volumes[~np.isnan(volumes)]
+        
+        if len(volumes) < 5:
+            return 0
+        
+        # Oblicz RVOL
+        avg_vol = np.mean(volumes)
+        today_vol = volumes[-1]
+        
+        if avg_vol == 0:
+            return 0
+        
+        rvol = today_vol / avg_vol
+        
+        # Dla debug - pokaż w sidebarze
+        st.sidebar.success(f"{ticker}: RVOL={rvol:.2f}, kolumna={volume_col}")
+        
+        return rvol
+        
+    except Exception as e:
+        st.sidebar.error(f"Błąd dla {ticker}: {e}")
+        return 0
+def quick_rvol_check(ticker):
+    """
+    FAZA 1: Szybkie sprawdzenie RVOL - NAPRAWIONA WERSJA
+    """
+    try:
+        url = f"https://stooq.pl/q/d/l/?s={ticker.lower()}.us&i=d"
+        
+        response = requests.get(url, timeout=TIMEOUT_SECONDS)
+        
+        if response.status_code != 200:
+            return 0
+        
+        # Wczytaj CSV
+        df = pd.read_csv(StringIO(response.text))
+        
+        if df.empty or len(df) < 5:
+            return 0
+        
+        # DEBUG - zobaczmy kolumny (możesz potem usunąć)
+        st.sidebar.write(f"Kolumny dla {ticker}: {df.columns.tolist()}")
+        
+        # Znajdź kolumnę z wolumenem - różne możliwe nazwy
+        volume_col = None
+        
+        # Lista możliwych nazw kolumn w stooq.pl
+        possible_names = ['Wolumen', 'Volume', 'Wol', 'Vol', 'Obrot', 'Obrót']
+        
+        for col in df.columns:
+            if col in possible_names:
+                volume_col = col
+                break
+        
+        # Jeśli nie znaleziono po nazwie, sprawdź typ danych
+        if volume_col is None:
+            for col in df.columns:
+                if df[col].dtype in ['int64', 'float64'] and col not in ['Data', 'Date']:
+                    # Prawdopodobnie to wolumen
+                    volume_col = col
+                    break
+        
+        # Ostateczność - ostatnia kolumna numeryczna
+        if volume_col is None:
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) > 0:
+                volume_col = numeric_cols[-1]  # Ostatnia kolumna numeryczna
+        
+        if volume_col is None:
+            st.sidebar.error(f"Nie znaleziono kolumny z wolumenem dla {ticker}")
+            return 0
+        
+        # Pobierz wolumeny
+        volumes = df[volume_col].values
+        
+        # Konwersja na liczby
+        volumes = pd.to_numeric(volumes, errors='coerce')
+        volumes = volumes[~np.isnan(volumes)]
+        
+        if len(volumes) < 5:
+            return 0
+        
+        # Oblicz RVOL
+        avg_vol = np.mean(volumes)
+        today_vol = volumes[-1]
+        
+        if avg_vol == 0:
+            return 0
+        
+        rvol = today_vol / avg_vol
+        
+        # Dla debug - pokaż w sidebarze
+        st.sidebar.success(f"{ticker}: RVOL={rvol:.2f}, kolumna={volume_col}")
+        
+        return rvol
+        
+    except Exception as e:
+        st.sidebar.error(f"Błąd dla {ticker}: {e}")
+        return 0
+def quick_rvol_check(ticker):
+    """
+    FAZA 1: Szybkie sprawdzenie RVOL - NAPRAWIONA WERSJA
+    """
+    try:
+        url = f"https://stooq.pl/q/d/l/?s={ticker.lower()}.us&i=d"
+        
+        response = requests.get(url, timeout=TIMEOUT_SECONDS)
+        
+        if response.status_code != 200:
+            return 0
+        
+        # Wczytaj CSV
+        df = pd.read_csv(StringIO(response.text))
+        
+        if df.empty or len(df) < 5:
+            return 0
+        
+        # DEBUG - zobaczmy kolumny (możesz potem usunąć)
+        st.sidebar.write(f"Kolumny dla {ticker}: {df.columns.tolist()}")
+        
+        # Znajdź kolumnę z wolumenem - różne możliwe nazwy
+        volume_col = None
+        
+        # Lista możliwych nazw kolumn w stooq.pl
+        possible_names = ['Wolumen', 'Volume', 'Wol', 'Vol', 'Obrot', 'Obrót']
+        
+        for col in df.columns:
+            if col in possible_names:
+                volume_col = col
+                break
+        
+        # Jeśli nie znaleziono po nazwie, sprawdź typ danych
+        if volume_col is None:
+            for col in df.columns:
+                if df[col].dtype in ['int64', 'float64'] and col not in ['Data', 'Date']:
+                    # Prawdopodobnie to wolumen
+                    volume_col = col
+                    break
+        
+        # Ostateczność - ostatnia kolumna numeryczna
+        if volume_col is None:
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) > 0:
+                volume_col = numeric_cols[-1]  # Ostatnia kolumna numeryczna
+        
+        if volume_col is None:
+            st.sidebar.error(f"Nie znaleziono kolumny z wolumenem dla {ticker}")
+            return 0
+        
+        # Pobierz wolumeny
+        volumes = df[volume_col].values
+        
+        # Konwersja na liczby
+        volumes = pd.to_numeric(volumes, errors='coerce')
+        volumes = volumes[~np.isnan(volumes)]
+        
+        if len(volumes) < 5:
+            return 0
+        
+        # Oblicz RVOL
+        avg_vol = np.mean(volumes)
+        today_vol = volumes[-1]
+        
+        if avg_vol == 0:
+            return 0
+        
+        rvol = today_vol / avg_vol
+        
+        # Dla debug - pokaż w sidebarze
+        st.sidebar.success(f"{ticker}: RVOL={rvol:.2f}, kolumna={volume_col}")
+        
+        return rvol
+        
+    except Exception as e:
+        st.sidebar.error(f"Błąd dla {ticker}: {e}")
+        return 0response.text))
+def quick_rvol_check(ticker):
+    """
+    FAZA 1: Szybkie sprawdzenie RVOL - NAPRAWIONA WERSJA
+    """
+    try:
+        url = f"https://stooq.pl/q/d/l/?s={ticker.lower()}.us&i=d"
+        
+        response = requests.get(url, timeout=TIMEOUT_SECONDS)
+        
+        if response.status_code != 200:
+            return 0
+        
+        # Wczytaj CSV
+        df = pd.read_csv(StringIO(response.text))
+        
+        if df.empty or len(df) < 5:
+            return 0
+        
+        # DEBUG - zobaczmy kolumny (możesz potem usunąć)
+        st.sidebar.write(f"Kolumny dla {ticker}: {df.columns.tolist()}")
+        
+        # Znajdź kolumnę z wolumenem - różne możliwe nazwy
+        volume_col = None
+        
+        # Lista możliwych nazw kolumn w stooq.pl
+        possible_names = ['Wolumen', 'Volume', 'Wol', 'Vol', 'Obrot', 'Obrót']
+        
+        for col in df.columns:
+            if col in possible_names:
+                volume_col = col
+                break
+        
+        # Jeśli nie znaleziono po nazwie, sprawdź typ danych
+        if volume_col is None:
+            for col in df.columns:
+                if df[col].dtype in ['int64', 'float64'] and col not in ['Data', 'Date']:
+                    # Prawdopodobnie to wolumen
+                    volume_col = col
+                    break
+        
+        # Ostateczność - ostatnia kolumna numeryczna
+        if volume_col is None:
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) > 0:
+                volume_col = numeric_cols[-1]  # Ostatnia kolumna numeryczna
+        
+        if volume_col is None:
+            st.sidebar.error(f"Nie znaleziono kolumny z wolumenem dla {ticker}")
+            return 0
+        
+        # Pobierz wolumeny
+        volumes = df[volume_col].values
+        
+        # Konwersja na liczby
+        volumes = pd.to_numeric(volumes, errors='coerce')
+        volumes = volumes[~np.isnan(volumes)]
+        
+        if len(volumes) < 5:
+            return 0
+        
+        # Oblicz RVOL
+        avg_vol = np.mean(volumes)
+        today_vol = volumes[-1]
+        
+        if avg_vol == 0:
+            return 0
+        
+        rvol = today_vol / avg_vol
+        
+        # Dla debug - pokaż w sidebarze
+        st.sidebar.success(f"{ticker}: RVOL={rvol:.2f}, kolumna={volume_col}")
+        
+        return rvol
+        
+    except Exception as e:
+        st.sidebar.error(f"Błąd dla {ticker}: {e}")
+        return 0
+def quick_rvol_check(ticker):
+    """
+    FAZA 1: Szybkie sprawdzenie RVOL - NAPRAWIONA WERSJA
+    """
+    try:
+        url = f"https://stooq.pl/q/d/l/?s={ticker.lower()}.us&i=d"
+        
+        response = requests.get(url, timeout=TIMEOUT_SECONDS)
+        
+        if response.status_code != 200:
+            return 0
+        
+        # Wczytaj CSV
+        df = pd.read_csv(StringIO(response.text))
+        
+        if df.empty or len(df) < 5:
+            return 0
+        
+        # DEBUG - zobaczmy kolumny (możesz potem usunąć)
+        st.sidebar.write(f"Kolumny dla {ticker}: {df.columns.tolist()}")
+        
+        # Znajdź kolumnę z wolumenem - różne możliwe nazwy
+        volume_col = None
+        
+        # Lista możliwych nazw kolumn w stooq.pl
+        possible_names = ['Wolumen', 'Volume', 'Wol', 'Vol', 'Obrot', 'Obrót']
+        
+        for col in df.columns:
+            if col in possible_names:
+                volume_col = col
+                break
+        
+        # Jeśli nie znaleziono po nazwie, sprawdź typ danych
+        if volume_col is None:
+            for col in df.columns:
+                if df[col].dtype in ['int64', 'float64'] and col not in ['Data', 'Date']:
+                    # Prawdopodobnie to wolumen
+                    volume_col = col
+                    break
+        
+        # Ostateczność - ostatnia kolumna numeryczna
+        if volume_col is None:
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) > 0:
+                volume_col = numeric_cols[-1]  # Ostatnia kolumna numeryczna
+        
+        if volume_col is None:
+            st.sidebar.error(f"Nie znaleziono kolumny z wolumenem dla {ticker}")
+            return 0
+        
+        # Pobierz wolumeny
+        volumes = df[volume_col].values
+        
+        # Konwersja na liczby
+        volumes = pd.to_numeric(volumes, errors='coerce')
+        volumes = volumes[~np.isnan(volumes)]
+        
+        if len(volumes) < 5:
+            return 0
+        
+        # Oblicz RVOL
+        avg_vol = np.mean(volumes)
+        today_vol = volumes[-1]
+        
+        if avg_vol == 0:
+            return 0
+        
+        rvol = today_vol / avg_vol
+        
+        # Dla debug - pokaż w sidebarze
+        st.sidebar.success(f"{ticker}: RVOL={rvol:.2f}, kolumna={volume_col}")
+        
+        return rvol
+        
+    except Exception as e:
+        st.sidebar.error(f"Błąd dla {ticker}: {e}")
+        return 0:
+def quick_rvol_check(ticker):
+    """
+    FAZA 1: Szybkie sprawdzenie RVOL - NAPRAWIONA WERSJA
+    """
+    try:
+        url = f"https://stooq.pl/q/d/l/?s={ticker.lower()}.us&i=d"
+        
+        response = requests.get(url, timeout=TIMEOUT_SECONDS)
+        
+        if response.status_code != 200:
+            return 0
+        
+        # Wczytaj CSV
+        df = pd.read_csv(StringIO(response.text))
+        
+        if df.empty or len(df) < 5:
+            return 0
+        
+        # DEBUG - zobaczmy kolumny (możesz potem usunąć)
+        st.sidebar.write(f"Kolumny dla {ticker}: {df.columns.tolist()}")
+        
+        # Znajdź kolumnę z wolumenem - różne możliwe nazwy
+        volume_col = None
+        
+        # Lista możliwych nazw kolumn w stooq.pl
+        possible_names = ['Wolumen', 'Volume', 'Wol', 'Vol', 'Obrot', 'Obrót']
+        
+        for col in df.columns:
+            if col in possible_names:
+                volume_col = col
+                break
+        
+        # Jeśli nie znaleziono po nazwie, sprawdź typ danych
+        if volume_col is None:
+            for col in df.columns:
+                if df[col].dtype in ['int64', 'float64'] and col not in ['Data', 'Date']:
+                    # Prawdopodobnie to wolumen
+                    volume_col = col
+                    break
+        
+        # Ostateczność - ostatnia kolumna numeryczna
+        if volume_col is None:
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) > 0:
+                volume_col = numeric_cols[-1]  # Ostatnia kolumna numeryczna
+        
+        if volume_col is None:
+            st.sidebar.error(f"Nie znaleziono kolumny z wolumenem dla {ticker}")
+            return 0
+        
+        # Pobierz wolumeny
+        volumes = df[volume_col].values
+        
+        # Konwersja na liczby
+        volumes = pd.to_numeric(volumes, errors='coerce')
+        volumes = volumes[~np.isnan(volumes)]
+        
+        if len(volumes) < 5:
+            return 0
+        
+        # Oblicz RVOL
+        avg_vol = np.mean(volumes)
+        today_vol = volumes[-1]
+        
+        if avg_vol == 0:
+            return 0
+        
+        rvol = today_vol / avg_vol
+        
+        # Dla debug - pokaż w sidebarze
+        st.sidebar.success(f"{ticker}: RVOL={rvol:.2f}, kolumna={volume_col}")
+        
+        return rvol
+        
+    except Exception as e:
+        st.sidebar.error(f"Błąd dla {ticker}: {e}")
+        return 0
+def quick_rvol_check(ticker):
+    """
+    FAZA 1: Szybkie sprawdzenie RVOL - NAPRAWIONA WERSJA
+    """
+    try:
+        url = f"https://stooq.pl/q/d/l/?s={ticker.lower()}.us&i=d"
+        
+        response = requests.get(url, timeout=TIMEOUT_SECONDS)
+        
+        if response.status_code != 200:
+            return 0
+        
+        # Wczytaj CSV
+        df = pd.read_csv(StringIO(response.text))
+        
+        if df.empty or len(df) < 5:
+            return 0
+        
+        # DEBUG - zobaczmy kolumny (możesz potem usunąć)
+        st.sidebar.write(f"Kolumny dla {ticker}: {df.columns.tolist()}")
+        
+        # Znajdź kolumnę z wolumenem - różne możliwe nazwy
+        volume_col = None
+        
+        # Lista możliwych nazw kolumn w stooq.pl
+        possible_names = ['Wolumen', 'Volume', 'Wol', 'Vol', 'Obrot', 'Obrót']
+        
+        for col in df.columns:
+            if col in possible_names:
+                volume_col = col
+                break
+        
+        # Jeśli nie znaleziono po nazwie, sprawdź typ danych
+        if volume_col is None:
+            for col in df.columns:
+                if df[col].dtype in ['int64', 'float64'] and col not in ['Data', 'Date']:
+                    # Prawdopodobnie to wolumen
+                    volume_col = col
+                    break
+        
+        # Ostateczność - ostatnia kolumna numeryczna
+        if volume_col is None:
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) > 0:
+                volume_col = numeric_cols[-1]  # Ostatnia kolumna numeryczna
+        
+        if volume_col is None:
+            st.sidebar.error(f"Nie znaleziono kolumny z wolumenem dla {ticker}")
+            return 0
+        
+        # Pobierz wolumeny
+        volumes = df[volume_col].values
+        
+        # Konwersja na liczby
+        volumes = pd.to_numeric(volumes, errors='coerce')
+        volumes = volumes[~np.isnan(volumes)]
+        
+        if len(volumes) < 5:
+            return 0
+        
+        # Oblicz RVOL
+        avg_vol = np.mean(volumes)
+        today_vol = volumes[-1]
+        
+        if avg_vol == 0:
+            return 0
+        
+        rvol = today_vol / avg_vol
+        
+        # Dla debug - pokaż w sidebarze
+        st.sidebar.success(f"{ticker}: RVOL={rvol:.2f}, kolumna={volume_col}")
+        
+        return rvol
+        
+    except Exception as e:
+        st.sidebar.error(f"Błąd dla {ticker}: {e}")
+        return 0
+def quick_rvol_check(ticker):
+    """
+    FAZA 1: Szybkie sprawdzenie RVOL - NAPRAWIONA WERSJA
+    """
+    try:
+        url = f"https://stooq.pl/q/d/l/?s={ticker.lower()}.us&i=d"
+        
+        response = requests.get(url, timeout=TIMEOUT_SECONDS)
+        
+        if response.status_code != 200:
+            return 0
+        
+        # Wczytaj CSV
+        df = pd.read_csv(StringIO(response.text))
+        
+        if df.empty or len(df) < 5:
+            return 0
+        
+        # DEBUG - zobaczmy kolumny (możesz potem usunąć)
+        st.sidebar.write(f"Kolumny dla {ticker}: {df.columns.tolist()}")
+        
+        # Znajdź kolumnę z wolumenem - różne możliwe nazwy
+        volume_col = None
+        
+        # Lista możliwych nazw kolumn w stooq.pl
+        possible_names = ['Wolumen', 'Volume', 'Wol', 'Vol', 'Obrot', 'Obrót']
+        
+        for col in df.columns:
+            if col in possible_names:
+                volume_col = col
+                break
+        
+        # Jeśli nie znaleziono po nazwie, sprawdź typ danych
+        if volume_col is None:
+            for col in df.columns:
+                if df[col].dtype in ['int64', 'float64'] and col not in ['Data', 'Date']:
+                    # Prawdopodobnie to wolumen
+                    volume_col = col
+                    break
+        
+        # Ostateczność - ostatnia kolumna numeryczna
+        if volume_col is None:
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) > 0:
+                volume_col = numeric_cols[-1]  # Ostatnia kolumna numeryczna
+        
+        if volume_col is None:
+            st.sidebar.error(f"Nie znaleziono kolumny z wolumenem dla {ticker}")
+            return 0
+        
+        # Pobierz wolumeny
+        volumes = df[volume_col].values
+        
+        # Konwersja na liczby
+        volumes = pd.to_numeric(volumes, errors='coerce')
+        volumes = volumes[~np.isnan(volumes)]
+        
+        if len(volumes) < 5:
+            return 0
+        
+        # Oblicz RVOL
+        avg_vol = np.mean(volumes)
+        today_vol = volumes[-1]
+        
+        if avg_vol == 0:
+            return 0
+        
+        rvol = today_vol / avg_vol
+        
+        # Dla debug - pokaż w sidebarze
+        st.sidebar.success(f"{ticker}: RVOL={rvol:.2f}, kolumna={volume_col}")
+        
+        return rvol
+        
+    except Exception as e:
+        st.sidebar.error(f"Błąd dla {ticker}: {e}")
+        return 0em
+def quick_rvol_check(ticker):
+    """
+    FAZA 1: Szybkie sprawdzenie RVOL - NAPRAWIONA WERSJA
+    """
+    try:
+        url = f"https://stooq.pl/q/d/l/?s={ticker.lower()}.us&i=d"
+        
+        response = requests.get(url, timeout=TIMEOUT_SECONDS)
+        
+        if response.status_code != 200:
+            return 0
+        
+        # Wczytaj CSV
+        df = pd.read_csv(StringIO(response.text))
+        
+        if df.empty or len(df) < 5:
+            return 0
+        
+        # DEBUG - zobaczmy kolumny (możesz potem usunąć)
+        st.sidebar.write(f"Kolumny dla {ticker}: {df.columns.tolist()}")
+        
+        # Znajdź kolumnę z wolumenem - różne możliwe nazwy
+        volume_col = None
+        
+        # Lista możliwych nazw kolumn w stooq.pl
+        possible_names = ['Wolumen', 'Volume', 'Wol', 'Vol', 'Obrot', 'Obrót']
+        
+        for col in df.columns:
+            if col in possible_names:
+                volume_col = col
+                break
+        
+        # Jeśli nie znaleziono po nazwie, sprawdź typ danych
+        if volume_col is None:
+            for col in df.columns:
+                if df[col].dtype in ['int64', 'float64'] and col not in ['Data', 'Date']:
+                    # Prawdopodobnie to wolumen
+                    volume_col = col
+                    break
+        
+        # Ostateczność - ostatnia kolumna numeryczna
+        if volume_col is None:
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) > 0:
+                volume_col = numeric_cols[-1]  # Ostatnia kolumna numeryczna
+        
+        if volume_col is None:
+            st.sidebar.error(f"Nie znaleziono kolumny z wolumenem dla {ticker}")
+            return 0
+        
+        # Pobierz wolumeny
+        volumes = df[volume_col].values
+        
+        # Konwersja na liczby
+        volumes = pd.to_numeric(volumes, errors='coerce')
+        volumes = volumes[~np.isnan(volumes)]
+        
+        if len(volumes) < 5:
+            return 0
+        
+        # Oblicz RVOL
+        avg_vol = np.mean(volumes)
+        today_vol = volumes[-1]
+        
+        if avg_vol == 0:
+            return 0
+        
+        rvol = today_vol / avg_vol
+        
+        # Dla debug - pokaż w sidebarze
+        st.sidebar.success(f"{ticker}: RVOL={rvol:.2f}, kolumna={volume_col}")
+        
+        return rvol
+        
+    except Exception as e:
+        st.sidebar.error(f"Błąd dla {ticker}: {e}")
+        return 0
+def quick_rvol_check(ticker):
+    """
+    FAZA 1: Szybkie sprawdzenie RVOL - NAPRAWIONA WERSJA
+    """
+    try:
+        url = f"https://stooq.pl/q/d/l/?s={ticker.lower()}.us&i=d"
+        
+        response = requests.get(url, timeout=TIMEOUT_SECONDS)
+        
+        if response.status_code != 200:
+            return 0
+        
+        # Wczytaj CSV
+        df = pd.read_csv(StringIO(response.text))
+        
+        if df.empty or len(df) < 5:
+            return 0
+        
+        # DEBUG - zobaczmy kolumny (możesz potem usunąć)
+        st.sidebar.write(f"Kolumny dla {ticker}: {df.columns.tolist()}")
+        
+        # Znajdź kolumnę z wolumenem - różne możliwe nazwy
+        volume_col = None
+        
+        # Lista możliwych nazw kolumn w stooq.pl
+        possible_names = ['Wolumen', 'Volume', 'Wol', 'Vol', 'Obrot', 'Obrót']
+        
+        for col in df.columns:
+            if col in possible_names:
+                volume_col = col
+                break
+        
+        # Jeśli nie znaleziono po nazwie, sprawdź typ danych
+        if volume_col is None:
+            for col in df.columns:
+                if df[col].dtype in ['int64', 'float64'] and col not in ['Data', 'Date']:
+                    # Prawdopodobnie to wolumen
+                    volume_col = col
+                    break
+        
+        # Ostateczność - ostatnia kolumna numeryczna
+        if volume_col is None:
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) > 0:
+                volume_col = numeric_cols[-1]  # Ostatnia kolumna numeryczna
+        
+        if volume_col is None:
+            st.sidebar.error(f"Nie znaleziono kolumny z wolumenem dla {ticker}")
+            return 0
+        
+        # Pobierz wolumeny
+        volumes = df[volume_col].values
+        
+        # Konwersja na liczby
+        volumes = pd.to_numeric(volumes, errors='coerce')
+        volumes = volumes[~np.isnan(volumes)]
+        
+        if len(volumes) < 5:
+            return 0
+        
+        # Oblicz RVOL
+        avg_vol = np.mean(volumes)
+        today_vol = volumes[-1]
+        
+        if avg_vol == 0:
+            return 0
+        
+        rvol = today_vol / avg_vol
+        
+        # Dla debug - pokaż w sidebarze
+        st.sidebar.success(f"{ticker}: RVOL={rvol:.2f}, kolumna={volume_col}")
+        
+        return rvol
+        
+    except Exception as e:
+        st.sidebar.error(f"Błąd dla {ticker}: {e}")
+        return 0', 'Volume', 'Wol', 'Vol']
+def quick_rvol_check(ticker):
+    """
+    FAZA 1: Szybkie sprawdzenie RVOL - NAPRAWIONA WERSJA
+    """
+    try:
+        url = f"https://stooq.pl/q/d/l/?s={ticker.lower()}.us&i=d"
+        
+        response = requests.get(url, timeout=TIMEOUT_SECONDS)
+        
+        if response.status_code != 200:
+            return 0
+        
+        # Wczytaj CSV
+        df = pd.read_csv(StringIO(response.text))
+        
+        if df.empty or len(df) < 5:
+            return 0
+        
+        # DEBUG - zobaczmy kolumny (możesz potem usunąć)
+        st.sidebar.write(f"Kolumny dla {ticker}: {df.columns.tolist()}")
+        
+        # Znajdź kolumnę z wolumenem - różne możliwe nazwy
+        volume_col = None
+        
+        # Lista możliwych nazw kolumn w stooq.pl
+        possible_names = ['Wolumen', 'Volume', 'Wol', 'Vol', 'Obrot', 'Obrót']
+        
+        for col in df.columns:
+            if col in possible_names:
+                volume_col = col
+                break
+        
+        # Jeśli nie znaleziono po nazwie, sprawdź typ danych
+        if volume_col is None:
+            for col in df.columns:
+                if df[col].dtype in ['int64', 'float64'] and col not in ['Data', 'Date']:
+                    # Prawdopodobnie to wolumen
+                    volume_col = col
+                    break
+        
+        # Ostateczność - ostatnia kolumna numeryczna
+        if volume_col is None:
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) > 0:
+                volume_col = numeric_cols[-1]  # Ostatnia kolumna numeryczna
+        
+        if volume_col is None:
+            st.sidebar.error(f"Nie znaleziono kolumny z wolumenem dla {ticker}")
+            return 0
+        
+        # Pobierz wolumeny
+        volumes = df[volume_col].values
+        
+        # Konwersja na liczby
+        volumes = pd.to_numeric(volumes, errors='coerce')
+        volumes = volumes[~np.isnan(volumes)]
+        
+        if len(volumes) < 5:
+            return 0
+        
+        # Oblicz RVOL
+        avg_vol = np.mean(volumes)
+        today_vol = volumes[-1]
+        
+        if avg_vol == 0:
+            return 0
+        
+        rvol = today_vol / avg_vol
+        
+        # Dla debug - pokaż w sidebarze
+        st.sidebar.success(f"{ticker}: RVOL={rvol:.2f}, kolumna={volume_col}")
+        
+        return rvol
+        
+    except Exception as e:
+        st.sidebar.error(f"Błąd dla {ticker}: {e}")
+        return 0
+def quick_rvol_check(ticker):
+    """
+    FAZA 1: Szybkie sprawdzenie RVOL - NAPRAWIONA WERSJA
+    """
+    try:
+        url = f"https://stooq.pl/q/d/l/?s={ticker.lower()}.us&i=d"
+        
+        response = requests.get(url, timeout=TIMEOUT_SECONDS)
+        
+        if response.status_code != 200:
+            return 0
+        
+        # Wczytaj CSV
+        df = pd.read_csv(StringIO(response.text))
+        
+        if df.empty or len(df) < 5:
+            return 0
+        
+        # DEBUG - zobaczmy kolumny (możesz potem usunąć)
+        st.sidebar.write(f"Kolumny dla {ticker}: {df.columns.tolist()}")
+        
+        # Znajdź kolumnę z wolumenem - różne możliwe nazwy
+        volume_col = None
+        
+        # Lista możliwych nazw kolumn w stooq.pl
+        possible_names = ['Wolumen', 'Volume', 'Wol', 'Vol', 'Obrot', 'Obrót']
+        
+        for col in df.columns:
+            if col in possible_names:
+                volume_col = col
+                break
+        
+        # Jeśli nie znaleziono po nazwie, sprawdź typ danych
+        if volume_col is None:
+            for col in df.columns:
+                if df[col].dtype in ['int64', 'float64'] and col not in ['Data', 'Date']:
+                    # Prawdopodobnie to wolumen
+                    volume_col = col
+                    break
+        
+        # Ostateczność - ostatnia kolumna numeryczna
+        if volume_col is None:
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) > 0:
+                volume_col = numeric_cols[-1]  # Ostatnia kolumna numeryczna
+        
+        if volume_col is None:
+            st.sidebar.error(f"Nie znaleziono kolumny z wolumenem dla {ticker}")
+            return 0
+        
+        # Pobierz wolumeny
+        volumes = df[volume_col].values
+        
+        # Konwersja na liczby
+        volumes = pd.to_numeric(volumes, errors='coerce')
+        volumes = volumes[~np.isnan(volumes)]
+        
+        if len(volumes) < 5:
+            return 0
+        
+        # Oblicz RVOL
+        avg_vol = np.mean(volumes)
+        today_vol = volumes[-1]
+        
+        if avg_vol == 0:
+            return 0
+        
+        rvol = today_vol / avg_vol
+        
+        # Dla debug - pokaż w sidebarze
+        st.sidebar.success(f"{ticker}: RVOL={rvol:.2f}, kolumna={volume_col}")
+        
+        return rvol
+        
+    except Exception as e:
+        st.sidebar.error(f"Błąd dla {ticker}: {e}")
+        return 0
+def quick_rvol_check(ticker):
+    """
+    FAZA 1: Szybkie sprawdzenie RVOL - NAPRAWIONA WERSJA
+    """
+    try:
+        url = f"https://stooq.pl/q/d/l/?s={ticker.lower()}.us&i=d"
+        
+        response = requests.get(url, timeout=TIMEOUT_SECONDS)
+        
+        if response.status_code != 200:
+            return 0
+        
+        # Wczytaj CSV
+        df = pd.read_csv(StringIO(response.text))
+        
+        if df.empty or len(df) < 5:
+            return 0
+        
+        # DEBUG - zobaczmy kolumny (możesz potem usunąć)
+        st.sidebar.write(f"Kolumny dla {ticker}: {df.columns.tolist()}")
+        
+        # Znajdź kolumnę z wolumenem - różne możliwe nazwy
+        volume_col = None
+        
+        # Lista możliwych nazw kolumn w stooq.pl
+        possible_names = ['Wolumen', 'Volume', 'Wol', 'Vol', 'Obrot', 'Obrót']
+        
+        for col in df.columns:
+            if col in possible_names:
+                volume_col = col
+                break
+        
+        # Jeśli nie znaleziono po nazwie, sprawdź typ danych
+        if volume_col is None:
+            for col in df.columns:
+                if df[col].dtype in ['int64', 'float64'] and col not in ['Data', 'Date']:
+                    # Prawdopodobnie to wolumen
+                    volume_col = col
+                    break
+        
+        # Ostateczność - ostatnia kolumna numeryczna
+        if volume_col is None:
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) > 0:
+                volume_col = numeric_cols[-1]  # Ostatnia kolumna numeryczna
+        
+        if volume_col is None:
+            st.sidebar.error(f"Nie znaleziono kolumny z wolumenem dla {ticker}")
+            return 0
+        
+        # Pobierz wolumeny
+        volumes = df[volume_col].values
+        
+        # Konwersja na liczby
+        volumes = pd.to_numeric(volumes, errors='coerce')
+        volumes = volumes[~np.isnan(volumes)]
+        
+        if len(volumes) < 5:
+            return 0
+        
+        # Oblicz RVOL
+        avg_vol = np.mean(volumes)
+        today_vol = volumes[-1]
+        
+        if avg_vol == 0:
+            return 0
+        
+        rvol = today_vol / avg_vol
+        
+        # Dla debug - pokaż w sidebarze
+        st.sidebar.success(f"{ticker}: RVOL={rvol:.2f}, kolumna={volume_col}")
+        
+        return rvol
+        
+    except Exception as e:
+        st.sidebar.error(f"Błąd dla {ticker}: {e}")
+        return 0es:
+def quick_rvol_check(ticker):
+    """
+    FAZA 1: Szybkie sprawdzenie RVOL - NAPRAWIONA WERSJA
+    """
+    try:
+        url = f"https://stooq.pl/q/d/l/?s={ticker.lower()}.us&i=d"
+        
+        response = requests.get(url, timeout=TIMEOUT_SECONDS)
+        
+        if response.status_code != 200:
+            return 0
+        
+        # Wczytaj CSV
+        df = pd.read_csv(StringIO(response.text))
+        
+        if df.empty or len(df) < 5:
+            return 0
+        
+        # DEBUG - zobaczmy kolumny (możesz potem usunąć)
+        st.sidebar.write(f"Kolumny dla {ticker}: {df.columns.tolist()}")
+        
+        # Znajdź kolumnę z wolumenem - różne możliwe nazwy
+        volume_col = None
+        
+        # Lista możliwych nazw kolumn w stooq.pl
+        possible_names = ['Wolumen', 'Volume', 'Wol', 'Vol', 'Obrot', 'Obrót']
+        
+        for col in df.columns:
+            if col in possible_names:
+                volume_col = col
+                break
+        
+        # Jeśli nie znaleziono po nazwie, sprawdź typ danych
+        if volume_col is None:
+            for col in df.columns:
+                if df[col].dtype in ['int64', 'float64'] and col not in ['Data', 'Date']:
+                    # Prawdopodobnie to wolumen
+                    volume_col = col
+                    break
+        
+        # Ostateczność - ostatnia kolumna numeryczna
+        if volume_col is None:
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) > 0:
+                volume_col = numeric_cols[-1]  # Ostatnia kolumna numeryczna
+        
+        if volume_col is None:
+            st.sidebar.error(f"Nie znaleziono kolumny z wolumenem dla {ticker}")
+            return 0
+        
+        # Pobierz wolumeny
+        volumes = df[volume_col].values
+        
+        # Konwersja na liczby
+        volumes = pd.to_numeric(volumes, errors='coerce')
+        volumes = volumes[~np.isnan(volumes)]
+        
+        if len(volumes) < 5:
+            return 0
+        
+        # Oblicz RVOL
+        avg_vol = np.mean(volumes)
+        today_vol = volumes[-1]
+        
+        if avg_vol == 0:
+            return 0
+        
+        rvol = today_vol / avg_vol
+        
+        # Dla debug - pokaż w sidebarze
+        st.sidebar.success(f"{ticker}: RVOL={rvol:.2f}, kolumna={volume_col}")
+        
+        return rvol
+        
+    except Exception as e:
+        st.sidebar.error(f"Błąd dla {ticker}: {e}")
+        return 0
+def quick_rvol_check(ticker):
+    """
+    FAZA 1: Szybkie sprawdzenie RVOL - NAPRAWIONA WERSJA
+    """
+    try:
+        url = f"https://stooq.pl/q/d/l/?s={ticker.lower()}.us&i=d"
+        
+        response = requests.get(url, timeout=TIMEOUT_SECONDS)
+        
+        if response.status_code != 200:
+            return 0
+        
+        # Wczytaj CSV
+        df = pd.read_csv(StringIO(response.text))
+        
+        if df.empty or len(df) < 5:
+            return 0
+        
+        # DEBUG - zobaczmy kolumny (możesz potem usunąć)
+        st.sidebar.write(f"Kolumny dla {ticker}: {df.columns.tolist()}")
+        
+        # Znajdź kolumnę z wolumenem - różne możliwe nazwy
+        volume_col = None
+        
+        # Lista możliwych nazw kolumn w stooq.pl
+        possible_names = ['Wolumen', 'Volume', 'Wol', 'Vol', 'Obrot', 'Obrót']
+        
+        for col in df.columns:
+            if col in possible_names:
+                volume_col = col
+                break
+        
+        # Jeśli nie znaleziono po nazwie, sprawdź typ danych
+        if volume_col is None:
+            for col in df.columns:
+                if df[col].dtype in ['int64', 'float64'] and col not in ['Data', 'Date']:
+                    # Prawdopodobnie to wolumen
+                    volume_col = col
+                    break
+        
+        # Ostateczność - ostatnia kolumna numeryczna
+        if volume_col is None:
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) > 0:
+                volume_col = numeric_cols[-1]  # Ostatnia kolumna numeryczna
+        
+        if volume_col is None:
+            st.sidebar.error(f"Nie znaleziono kolumny z wolumenem dla {ticker}")
+            return 0
+        
+        # Pobierz wolumeny
+        volumes = df[volume_col].values
+        
+        # Konwersja na liczby
+        volumes = pd.to_numeric(volumes, errors='coerce')
+        volumes = volumes[~np.isnan(volumes)]
+        
+        if len(volumes) < 5:
+            return 0
+        
+        # Oblicz RVOL
+        avg_vol = np.mean(volumes)
+        today_vol = volumes[-1]
+        
+        if avg_vol == 0:
+            return 0
+        
+        rvol = today_vol / avg_vol
+        
+        # Dla debug - pokaż w sidebarze
+        st.sidebar.success(f"{ticker}: RVOL={rvol:.2f}, kolumna={volume_col}")
+        
+        return rvol
+        
+    except Exception as e:
+        st.sidebar.error(f"Błąd dla {ticker}: {e}")
+        return 0
+def quick_rvol_check(ticker):
+    """
+    FAZA 1: Szybkie sprawdzenie RVOL - NAPRAWIONA WERSJA
+    """
+    try:
+        url = f"https://stooq.pl/q/d/l/?s={ticker.lower()}.us&i=d"
+        
+        response = requests.get(url, timeout=TIMEOUT_SECONDS)
+        
+        if response.status_code != 200:
+            return 0
+        
+        # Wczytaj CSV
+        df = pd.read_csv(StringIO(response.text))
+        
+        if df.empty or len(df) < 5:
+            return 0
+        
+        # DEBUG - zobaczmy kolumny (możesz potem usunąć)
+        st.sidebar.write(f"Kolumny dla {ticker}: {df.columns.tolist()}")
+        
+        # Znajdź kolumnę z wolumenem - różne możliwe nazwy
+        volume_col = None
+        
+        # Lista możliwych nazw kolumn w stooq.pl
+        possible_names = ['Wolumen', 'Volume', 'Wol', 'Vol', 'Obrot', 'Obrót']
+        
+        for col in df.columns:
+            if col in possible_names:
+                volume_col = col
+                break
+        
+        # Jeśli nie znaleziono po nazwie, sprawdź typ danych
+        if volume_col is None:
+            for col in df.columns:
+                if df[col].dtype in ['int64', 'float64'] and col not in ['Data', 'Date']:
+                    # Prawdopodobnie to wolumen
+                    volume_col = col
+                    break
+        
+        # Ostateczność - ostatnia kolumna numeryczna
+        if volume_col is None:
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) > 0:
+                volume_col = numeric_cols[-1]  # Ostatnia kolumna numeryczna
+        
+        if volume_col is None:
+            st.sidebar.error(f"Nie znaleziono kolumny z wolumenem dla {ticker}")
+            return 0
+        
+        # Pobierz wolumeny
+        volumes = df[volume_col].values
+        
+        # Konwersja na liczby
+        volumes = pd.to_numeric(volumes, errors='coerce')
+        volumes = volumes[~np.isnan(volumes)]
+        
+        if len(volumes) < 5:
+            return 0
+        
+        # Oblicz RVOL
+        avg_vol = np.mean(volumes)
+        today_vol = volumes[-1]
+        
+        if avg_vol == 0:
+            return 0
+        
+        rvol = today_vol / avg_vol
+        
+        # Dla debug - pokaż w sidebarze
+        st.sidebar.success(f"{ticker}: RVOL={rvol:.2f}, kolumna={volume_col}")
+        
+        return rvol
+        
+    except Exception as e:
+        st.sidebar.error(f"Błąd dla {ticker}: {e}")
+        return 0
+def quick_rvol_check(ticker):
+    """
+    FAZA 1: Szybkie sprawdzenie RVOL - NAPRAWIONA WERSJA
+    """
+    try:
+        url = f"https://stooq.pl/q/d/l/?s={ticker.lower()}.us&i=d"
+        
+        response = requests.get(url, timeout=TIMEOUT_SECONDS)
+        
+        if response.status_code != 200:
+            return 0
+        
+        # Wczytaj CSV
+        df = pd.read_csv(StringIO(response.text))
+        
+        if df.empty or len(df) < 5:
+            return 0
+        
+        # DEBUG - zobaczmy kolumny (możesz potem usunąć)
+        st.sidebar.write(f"Kolumny dla {ticker}: {df.columns.tolist()}")
+        
+        # Znajdź kolumnę z wolumenem - różne możliwe nazwy
+        volume_col = None
+        
+        # Lista możliwych nazw kolumn w stooq.pl
+        possible_names = ['Wolumen', 'Volume', 'Wol', 'Vol', 'Obrot', 'Obrót']
+        
+        for col in df.columns:
+            if col in possible_names:
+                volume_col = col
+                break
+        
+        # Jeśli nie znaleziono po nazwie, sprawdź typ danych
+        if volume_col is None:
+            for col in df.columns:
+                if df[col].dtype in ['int64', 'float64'] and col not in ['Data', 'Date']:
+                    # Prawdopodobnie to wolumen
+                    volume_col = col
+                    break
+        
+        # Ostateczność - ostatnia kolumna numeryczna
+        if volume_col is None:
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) > 0:
+                volume_col = numeric_cols[-1]  # Ostatnia kolumna numeryczna
+        
+        if volume_col is None:
+            st.sidebar.error(f"Nie znaleziono kolumny z wolumenem dla {ticker}")
+            return 0
+        
+        # Pobierz wolumeny
+        volumes = df[volume_col].values
+        
+        # Konwersja na liczby
+        volumes = pd.to_numeric(volumes, errors='coerce')
+        volumes = volumes[~np.isnan(volumes)]
+        
+        if len(volumes) < 5:
+            return 0
+        
+        # Oblicz RVOL
+        avg_vol = np.mean(volumes)
+        today_vol = volumes[-1]
+        
+        if avg_vol == 0:
+            return 0
+        
+        rvol = today_vol / avg_vol
+        
+        # Dla debug - pokaż w sidebarze
+        st.sidebar.success(f"{ticker}: RVOL={rvol:.2f}, kolumna={volume_col}")
+        
+        return rvol
+        
+    except Exception as e:
+        st.sidebar.error(f"Błąd dla {ticker}: {e}")
+        return 0len(df.columns) >= 6:
+def quick_rvol_check(ticker):
+    """
+    FAZA 1: Szybkie sprawdzenie RVOL - NAPRAWIONA WERSJA
+    """
+    try:
+        url = f"https://stooq.pl/q/d/l/?s={ticker.lower()}.us&i=d"
+        
+        response = requests.get(url, timeout=TIMEOUT_SECONDS)
+        
+        if response.status_code != 200:
+            return 0
+        
+        # Wczytaj CSV
+        df = pd.read_csv(StringIO(response.text))
+        
+        if df.empty or len(df) < 5:
+            return 0
+        
+        # DEBUG - zobaczmy kolumny (możesz potem usunąć)
+        st.sidebar.write(f"Kolumny dla {ticker}: {df.columns.tolist()}")
+        
+        # Znajdź kolumnę z wolumenem - różne możliwe nazwy
+        volume_col = None
+        
+        # Lista możliwych nazw kolumn w stooq.pl
+        possible_names = ['Wolumen', 'Volume', 'Wol', 'Vol', 'Obrot', 'Obrót']
+        
+        for col in df.columns:
+            if col in possible_names:
+                volume_col = col
+                break
+        
+        # Jeśli nie znaleziono po nazwie, sprawdź typ danych
+        if volume_col is None:
+            for col in df.columns:
+                if df[col].dtype in ['int64', 'float64'] and col not in ['Data', 'Date']:
+                    # Prawdopodobnie to wolumen
+                    volume_col = col
+                    break
+        
+        # Ostateczność - ostatnia kolumna numeryczna
+        if volume_col is None:
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) > 0:
+                volume_col = numeric_cols[-1]  # Ostatnia kolumna numeryczna
+        
+        if volume_col is None:
+            st.sidebar.error(f"Nie znaleziono kolumny z wolumenem dla {ticker}")
+            return 0
+        
+        # Pobierz wolumeny
+        volumes = df[volume_col].values
+        
+        # Konwersja na liczby
+        volumes = pd.to_numeric(volumes, errors='coerce')
+        volumes = volumes[~np.isnan(volumes)]
+        
+        if len(volumes) < 5:
+            return 0
+        
+        # Oblicz RVOL
+        avg_vol = np.mean(volumes)
+        today_vol = volumes[-1]
+        
+        if avg_vol == 0:
+            return 0
+        
+        rvol = today_vol / avg_vol
+        
+        # Dla debug - pokaż w sidebarze
+        st.sidebar.success(f"{ticker}: RVOL={rvol:.2f}, kolumna={volume_col}")
+        
+        return rvol
+        
+    except Exception as e:
+        st.sidebar.error(f"Błąd dla {ticker}: {e}")
+        return 0s[5]
+def quick_rvol_check(ticker):
+    """
+    FAZA 1: Szybkie sprawdzenie RVOL - NAPRAWIONA WERSJA
+    """
+    try:
+        url = f"https://stooq.pl/q/d/l/?s={ticker.lower()}.us&i=d"
+        
+        response = requests.get(url, timeout=TIMEOUT_SECONDS)
+        
+        if response.status_code != 200:
+            return 0
+        
+        # Wczytaj CSV
+        df = pd.read_csv(StringIO(response.text))
+        
+        if df.empty or len(df) < 5:
+            return 0
+        
+        # DEBUG - zobaczmy kolumny (możesz potem usunąć)
+        st.sidebar.write(f"Kolumny dla {ticker}: {df.columns.tolist()}")
+        
+        # Znajdź kolumnę z wolumenem - różne możliwe nazwy
+        volume_col = None
+        
+        # Lista możliwych nazw kolumn w stooq.pl
+        possible_names = ['Wolumen', 'Volume', 'Wol', 'Vol', 'Obrot', 'Obrót']
+        
+        for col in df.columns:
+            if col in possible_names:
+                volume_col = col
+                break
+        
+        # Jeśli nie znaleziono po nazwie, sprawdź typ danych
+        if volume_col is None:
+            for col in df.columns:
+                if df[col].dtype in ['int64', 'float64'] and col not in ['Data', 'Date']:
+                    # Prawdopodobnie to wolumen
+                    volume_col = col
+                    break
+        
+        # Ostateczność - ostatnia kolumna numeryczna
+        if volume_col is None:
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) > 0:
+                volume_col = numeric_cols[-1]  # Ostatnia kolumna numeryczna
+        
+        if volume_col is None:
+            st.sidebar.error(f"Nie znaleziono kolumny z wolumenem dla {ticker}")
+            return 0
+        
+        # Pobierz wolumeny
+        volumes = df[volume_col].values
+        
+        # Konwersja na liczby
+        volumes = pd.to_numeric(volumes, errors='coerce')
+        volumes = volumes[~np.isnan(volumes)]
+        
+        if len(volumes) < 5:
+            return 0
+        
+        # Oblicz RVOL
+        avg_vol = np.mean(volumes)
+        today_vol = volumes[-1]
+        
+        if avg_vol == 0:
+            return 0
+        
+        rvol = today_vol / avg_vol
+        
+        # Dla debug - pokaż w sidebarze
+        st.sidebar.success(f"{ticker}: RVOL={rvol:.2f}, kolumna={volume_col}")
+        
+        return rvol
+        
+    except Exception as e:
+        st.sidebar.error(f"Błąd dla {ticker}: {e}")
+        return 0
+def quick_rvol_check(ticker):
+    """
+    FAZA 1: Szybkie sprawdzenie RVOL - NAPRAWIONA WERSJA
+    """
+    try:
+        url = f"https://stooq.pl/q/d/l/?s={ticker.lower()}.us&i=d"
+        
+        response = requests.get(url, timeout=TIMEOUT_SECONDS)
+        
+        if response.status_code != 200:
+            return 0
+        
+        # Wczytaj CSV
+        df = pd.read_csv(StringIO(response.text))
+        
+        if df.empty or len(df) < 5:
+            return 0
+        
+        # DEBUG - zobaczmy kolumny (możesz potem usunąć)
+        st.sidebar.write(f"Kolumny dla {ticker}: {df.columns.tolist()}")
+        
+        # Znajdź kolumnę z wolumenem - różne możliwe nazwy
+        volume_col = None
+        
+        # Lista możliwych nazw kolumn w stooq.pl
+        possible_names = ['Wolumen', 'Volume', 'Wol', 'Vol', 'Obrot', 'Obrót']
+        
+        for col in df.columns:
+            if col in possible_names:
+                volume_col = col
+                break
+        
+        # Jeśli nie znaleziono po nazwie, sprawdź typ danych
+        if volume_col is None:
+            for col in df.columns:
+                if df[col].dtype in ['int64', 'float64'] and col not in ['Data', 'Date']:
+                    # Prawdopodobnie to wolumen
+                    volume_col = col
+                    break
+        
+        # Ostateczność - ostatnia kolumna numeryczna
+        if volume_col is None:
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) > 0:
+                volume_col = numeric_cols[-1]  # Ostatnia kolumna numeryczna
+        
+        if volume_col is None:
+            st.sidebar.error(f"Nie znaleziono kolumny z wolumenem dla {ticker}")
+            return 0
+        
+        # Pobierz wolumeny
+        volumes = df[volume_col].values
+        
+        # Konwersja na liczby
+        volumes = pd.to_numeric(volumes, errors='coerce')
+        volumes = volumes[~np.isnan(volumes)]
+        
+        if len(volumes) < 5:
+            return 0
+        
+        # Oblicz RVOL
+        avg_vol = np.mean(volumes)
+        today_vol = volumes[-1]
+        
+        if avg_vol == 0:
+            return 0
+        
+        rvol = today_vol / avg_vol
+        
+        # Dla debug - pokaż w sidebarze
+        st.sidebar.success(f"{ticker}: RVOL={rvol:.2f}, kolumna={volume_col}")
+        
+        return rvol
+        
+    except Exception as e:
+        st.sidebar.error(f"Błąd dla {ticker}: {e}")
+        return 0
+def quick_rvol_check(ticker):
+    """
+    FAZA 1: Szybkie sprawdzenie RVOL - NAPRAWIONA WERSJA
+    """
+    try:
+        url = f"https://stooq.pl/q/d/l/?s={ticker.lower()}.us&i=d"
+        
+        response = requests.get(url, timeout=TIMEOUT_SECONDS)
+        
+        if response.status_code != 200:
+            return 0
+        
+        # Wczytaj CSV
+        df = pd.read_csv(StringIO(response.text))
+        
+        if df.empty or len(df) < 5:
+            return 0
+        
+        # DEBUG - zobaczmy kolumny (możesz potem usunąć)
+        st.sidebar.write(f"Kolumny dla {ticker}: {df.columns.tolist()}")
+        
+        # Znajdź kolumnę z wolumenem - różne możliwe nazwy
+        volume_col = None
+        
+        # Lista możliwych nazw kolumn w stooq.pl
+        possible_names = ['Wolumen', 'Volume', 'Wol', 'Vol', 'Obrot', 'Obrót']
+        
+        for col in df.columns:
+            if col in possible_names:
+                volume_col = col
+                break
+        
+        # Jeśli nie znaleziono po nazwie, sprawdź typ danych
+        if volume_col is None:
+            for col in df.columns:
+                if df[col].dtype in ['int64', 'float64'] and col not in ['Data', 'Date']:
+                    # Prawdopodobnie to wolumen
+                    volume_col = col
+                    break
+        
+        # Ostateczność - ostatnia kolumna numeryczna
+        if volume_col is None:
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) > 0:
+                volume_col = numeric_cols[-1]  # Ostatnia kolumna numeryczna
+        
+        if volume_col is None:
+            st.sidebar.error(f"Nie znaleziono kolumny z wolumenem dla {ticker}")
+            return 0
+        
+        # Pobierz wolumeny
+        volumes = df[volume_col].values
+        
+        # Konwersja na liczby
+        volumes = pd.to_numeric(volumes, errors='coerce')
+        volumes = volumes[~np.isnan(volumes)]
+        
+        if len(volumes) < 5:
+            return 0
+        
+        # Oblicz RVOL
+        avg_vol = np.mean(volumes)
+        today_vol = volumes[-1]
+        
+        if avg_vol == 0:
+            return 0
+        
+        rvol = today_vol / avg_vol
+        
+        # Dla debug - pokaż w sidebarze
+        st.sidebar.success(f"{ticker}: RVOL={rvol:.2f}, kolumna={volume_col}")
+        
+        return rvol
+        
+    except Exception as e:
+        st.sidebar.error(f"Błąd dla {ticker}: {e}")
+        return 0
+def quick_rvol_check(ticker):
+    """
+    FAZA 1: Szybkie sprawdzenie RVOL - NAPRAWIONA WERSJA
+    """
+    try:
+        url = f"https://stooq.pl/q/d/l/?s={ticker.lower()}.us&i=d"
+        
+        response = requests.get(url, timeout=TIMEOUT_SECONDS)
+        
+        if response.status_code != 200:
+            return 0
+        
+        # Wczytaj CSV
+        df = pd.read_csv(StringIO(response.text))
+        
+        if df.empty or len(df) < 5:
+            return 0
+        
+        # DEBUG - zobaczmy kolumny (możesz potem usunąć)
+        st.sidebar.write(f"Kolumny dla {ticker}: {df.columns.tolist()}")
+        
+        # Znajdź kolumnę z wolumenem - różne możliwe nazwy
+        volume_col = None
+        
+        # Lista możliwych nazw kolumn w stooq.pl
+        possible_names = ['Wolumen', 'Volume', 'Wol', 'Vol', 'Obrot', 'Obrót']
+        
+        for col in df.columns:
+            if col in possible_names:
+                volume_col = col
+                break
+        
+        # Jeśli nie znaleziono po nazwie, sprawdź typ danych
+        if volume_col is None:
+            for col in df.columns:
+                if df[col].dtype in ['int64', 'float64'] and col not in ['Data', 'Date']:
+                    # Prawdopodobnie to wolumen
+                    volume_col = col
+                    break
+        
+        # Ostateczność - ostatnia kolumna numeryczna
+        if volume_col is None:
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) > 0:
+                volume_col = numeric_cols[-1]  # Ostatnia kolumna numeryczna
+        
+        if volume_col is None:
+            st.sidebar.error(f"Nie znaleziono kolumny z wolumenem dla {ticker}")
+            return 0
+        
+        # Pobierz wolumeny
+        volumes = df[volume_col].values
+        
+        # Konwersja na liczby
+        volumes = pd.to_numeric(volumes, errors='coerce')
+        volumes = volumes[~np.isnan(volumes)]
+        
+        if len(volumes) < 5:
+            return 0
+        
+        # Oblicz RVOL
+        avg_vol = np.mean(volumes)
+        today_vol = volumes[-1]
+        
+        if avg_vol == 0:
+            return 0
+        
+        rvol = today_vol / avg_vol
+        
+        # Dla debug - pokaż w sidebarze
+        st.sidebar.success(f"{ticker}: RVOL={rvol:.2f}, kolumna={volume_col}")
+        
+        return rvol
+        
+    except Exception as e:
+        st.sidebar.error(f"Błąd dla {ticker}: {e}")
+        return 0
+def quick_rvol_check(ticker):
+    """
+    FAZA 1: Szybkie sprawdzenie RVOL - NAPRAWIONA WERSJA
+    """
+    try:
+        url = f"https://stooq.pl/q/d/l/?s={ticker.lower()}.us&i=d"
+        
+        response = requests.get(url, timeout=TIMEOUT_SECONDS)
+        
+        if response.status_code != 200:
+            return 0
+        
+        # Wczytaj CSV
+        df = pd.read_csv(StringIO(response.text))
+        
+        if df.empty or len(df) < 5:
+            return 0
+        
+        # DEBUG - zobaczmy kolumny (możesz potem usunąć)
+        st.sidebar.write(f"Kolumny dla {ticker}: {df.columns.tolist()}")
+        
+        # Znajdź kolumnę z wolumenem - różne możliwe nazwy
+        volume_col = None
+        
+        # Lista możliwych nazw kolumn w stooq.pl
+        possible_names = ['Wolumen', 'Volume', 'Wol', 'Vol', 'Obrot', 'Obrót']
+        
+        for col in df.columns:
+            if col in possible_names:
+                volume_col = col
+                break
+        
+        # Jeśli nie znaleziono po nazwie, sprawdź typ danych
+        if volume_col is None:
+            for col in df.columns:
+                if df[col].dtype in ['int64', 'float64'] and col not in ['Data', 'Date']:
+                    # Prawdopodobnie to wolumen
+                    volume_col = col
+                    break
+        
+        # Ostateczność - ostatnia kolumna numeryczna
+        if volume_col is None:
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) > 0:
+                volume_col = numeric_cols[-1]  # Ostatnia kolumna numeryczna
+        
+        if volume_col is None:
+            st.sidebar.error(f"Nie znaleziono kolumny z wolumenem dla {ticker}")
+            return 0
+        
+        # Pobierz wolumeny
+        volumes = df[volume_col].values
+        
+        # Konwersja na liczby
+        volumes = pd.to_numeric(volumes, errors='coerce')
+        volumes = volumes[~np.isnan(volumes)]
+        
+        if len(volumes) < 5:
+            return 0
+        
+        # Oblicz RVOL
+        avg_vol = np.mean(volumes)
+        today_vol = volumes[-1]
+        
+        if avg_vol == 0:
+            return 0
+        
+        rvol = today_vol / avg_vol
+        
+        # Dla debug - pokaż w sidebarze
+        st.sidebar.success(f"{ticker}: RVOL={rvol:.2f}, kolumna={volume_col}")
+        
+        return rvol
+        
+    except Exception as e:
+        st.sidebar.error(f"Błąd dla {ticker}: {e}")
+        return 0alues
+def quick_rvol_check(ticker):
+    """
+    FAZA 1: Szybkie sprawdzenie RVOL - NAPRAWIONA WERSJA
+    """
+    try:
+        url = f"https://stooq.pl/q/d/l/?s={ticker.lower()}.us&i=d"
+        
+        response = requests.get(url, timeout=TIMEOUT_SECONDS)
+        
+        if response.status_code != 200:
+            return 0
+        
+        # Wczytaj CSV
+        df = pd.read_csv(StringIO(response.text))
+        
+        if df.empty or len(df) < 5:
+            return 0
+        
+        # DEBUG - zobaczmy kolumny (możesz potem usunąć)
+        st.sidebar.write(f"Kolumny dla {ticker}: {df.columns.tolist()}")
+        
+        # Znajdź kolumnę z wolumenem - różne możliwe nazwy
+        volume_col = None
+        
+        # Lista możliwych nazw kolumn w stooq.pl
+        possible_names = ['Wolumen', 'Volume', 'Wol', 'Vol', 'Obrot', 'Obrót']
+        
+        for col in df.columns:
+            if col in possible_names:
+                volume_col = col
+                break
+        
+        # Jeśli nie znaleziono po nazwie, sprawdź typ danych
+        if volume_col is None:
+            for col in df.columns:
+                if df[col].dtype in ['int64', 'float64'] and col not in ['Data', 'Date']:
+                    # Prawdopodobnie to wolumen
+                    volume_col = col
+                    break
+        
+        # Ostateczność - ostatnia kolumna numeryczna
+        if volume_col is None:
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) > 0:
+                volume_col = numeric_cols[-1]  # Ostatnia kolumna numeryczna
+        
+        if volume_col is None:
+            st.sidebar.error(f"Nie znaleziono kolumny z wolumenem dla {ticker}")
+            return 0
+        
+        # Pobierz wolumeny
+        volumes = df[volume_col].values
+        
+        # Konwersja na liczby
+        volumes = pd.to_numeric(volumes, errors='coerce')
+        volumes = volumes[~np.isnan(volumes)]
+        
+        if len(volumes) < 5:
+            return 0
+        
+        # Oblicz RVOL
+        avg_vol = np.mean(volumes)
+        today_vol = volumes[-1]
+        
+        if avg_vol == 0:
+            return 0
+        
+        rvol = today_vol / avg_vol
+        
+        # Dla debug - pokaż w sidebarze
+        st.sidebar.success(f"{ticker}: RVOL={rvol:.2f}, kolumna={volume_col}")
+        
+        return rvol
+        
+    except Exception as e:
+        st.sidebar.error(f"Błąd dla {ticker}: {e}")
+        return 0lumes, errors='coerce')
+def quick_rvol_check(ticker):
+    """
+    FAZA 1: Szybkie sprawdzenie RVOL - NAPRAWIONA WERSJA
+    """
+    try:
+        url = f"https://stooq.pl/q/d/l/?s={ticker.lower()}.us&i=d"
+        
+        response = requests.get(url, timeout=TIMEOUT_SECONDS)
+        
+        if response.status_code != 200:
+            return 0
+        
+        # Wczytaj CSV
+        df = pd.read_csv(StringIO(response.text))
+        
+        if df.empty or len(df) < 5:
+            return 0
+        
+        # DEBUG - zobaczmy kolumny (możesz potem usunąć)
+        st.sidebar.write(f"Kolumny dla {ticker}: {df.columns.tolist()}")
+        
+        # Znajdź kolumnę z wolumenem - różne możliwe nazwy
+        volume_col = None
+        
+        # Lista możliwych nazw kolumn w stooq.pl
+        possible_names = ['Wolumen', 'Volume', 'Wol', 'Vol', 'Obrot', 'Obrót']
+        
+        for col in df.columns:
+            if col in possible_names:
+                volume_col = col
+                break
+        
+        # Jeśli nie znaleziono po nazwie, sprawdź typ danych
+        if volume_col is None:
+            for col in df.columns:
+                if df[col].dtype in ['int64', 'float64'] and col not in ['Data', 'Date']:
+                    # Prawdopodobnie to wolumen
+                    volume_col = col
+                    break
+        
+        # Ostateczność - ostatnia kolumna numeryczna
+        if volume_col is None:
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) > 0:
+                volume_col = numeric_cols[-1]  # Ostatnia kolumna numeryczna
+        
+        if volume_col is None:
+            st.sidebar.error(f"Nie znaleziono kolumny z wolumenem dla {ticker}")
+            return 0
+        
+        # Pobierz wolumeny
+        volumes = df[volume_col].values
+        
+        # Konwersja na liczby
+        volumes = pd.to_numeric(volumes, errors='coerce')
+        volumes = volumes[~np.isnan(volumes)]
+        
+        if len(volumes) < 5:
+            return 0
+        
+        # Oblicz RVOL
+        avg_vol = np.mean(volumes)
+        today_vol = volumes[-1]
+        
+        if avg_vol == 0:
+            return 0
+        
+        rvol = today_vol / avg_vol
+        
+        # Dla debug - pokaż w sidebarze
+        st.sidebar.success(f"{ticker}: RVOL={rvol:.2f}, kolumna={volume_col}")
+        
+        return rvol
+        
+    except Exception as e:
+        st.sidebar.error(f"Błąd dla {ticker}: {e}")
+        return 0n(volumes)]
+def quick_rvol_check(ticker):
+    """
+    FAZA 1: Szybkie sprawdzenie RVOL - NAPRAWIONA WERSJA
+    """
+    try:
+        url = f"https://stooq.pl/q/d/l/?s={ticker.lower()}.us&i=d"
+        
+        response = requests.get(url, timeout=TIMEOUT_SECONDS)
+        
+        if response.status_code != 200:
+            return 0
+        
+        # Wczytaj CSV
+        df = pd.read_csv(StringIO(response.text))
+        
+        if df.empty or len(df) < 5:
+            return 0
+        
+        # DEBUG - zobaczmy kolumny (możesz potem usunąć)
+        st.sidebar.write(f"Kolumny dla {ticker}: {df.columns.tolist()}")
+        
+        # Znajdź kolumnę z wolumenem - różne możliwe nazwy
+        volume_col = None
+        
+        # Lista możliwych nazw kolumn w stooq.pl
+        possible_names = ['Wolumen', 'Volume', 'Wol', 'Vol', 'Obrot', 'Obrót']
+        
+        for col in df.columns:
+            if col in possible_names:
+                volume_col = col
+                break
+        
+        # Jeśli nie znaleziono po nazwie, sprawdź typ danych
+        if volume_col is None:
+            for col in df.columns:
+                if df[col].dtype in ['int64', 'float64'] and col not in ['Data', 'Date']:
+                    # Prawdopodobnie to wolumen
+                    volume_col = col
+                    break
+        
+        # Ostateczność - ostatnia kolumna numeryczna
+        if volume_col is None:
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) > 0:
+                volume_col = numeric_cols[-1]  # Ostatnia kolumna numeryczna
+        
+        if volume_col is None:
+            st.sidebar.error(f"Nie znaleziono kolumny z wolumenem dla {ticker}")
+            return 0
+        
+        # Pobierz wolumeny
+        volumes = df[volume_col].values
+        
+        # Konwersja na liczby
+        volumes = pd.to_numeric(volumes, errors='coerce')
+        volumes = volumes[~np.isnan(volumes)]
+        
+        if len(volumes) < 5:
+            return 0
+        
+        # Oblicz RVOL
+        avg_vol = np.mean(volumes)
+        today_vol = volumes[-1]
+        
+        if avg_vol == 0:
+            return 0
+        
+        rvol = today_vol / avg_vol
+        
+        # Dla debug - pokaż w sidebarze
+        st.sidebar.success(f"{ticker}: RVOL={rvol:.2f}, kolumna={volume_col}")
+        
+        return rvol
+        
+    except Exception as e:
+        st.sidebar.error(f"Błąd dla {ticker}: {e}")
+        return 0
+def quick_rvol_check(ticker):
+    """
+    FAZA 1: Szybkie sprawdzenie RVOL - NAPRAWIONA WERSJA
+    """
+    try:
+        url = f"https://stooq.pl/q/d/l/?s={ticker.lower()}.us&i=d"
+        
+        response = requests.get(url, timeout=TIMEOUT_SECONDS)
+        
+        if response.status_code != 200:
+            return 0
+        
+        # Wczytaj CSV
+        df = pd.read_csv(StringIO(response.text))
+        
+        if df.empty or len(df) < 5:
+            return 0
+        
+        # DEBUG - zobaczmy kolumny (możesz potem usunąć)
+        st.sidebar.write(f"Kolumny dla {ticker}: {df.columns.tolist()}")
+        
+        # Znajdź kolumnę z wolumenem - różne możliwe nazwy
+        volume_col = None
+        
+        # Lista możliwych nazw kolumn w stooq.pl
+        possible_names = ['Wolumen', 'Volume', 'Wol', 'Vol', 'Obrot', 'Obrót']
+        
+        for col in df.columns:
+            if col in possible_names:
+                volume_col = col
+                break
+        
+        # Jeśli nie znaleziono po nazwie, sprawdź typ danych
+        if volume_col is None:
+            for col in df.columns:
+                if df[col].dtype in ['int64', 'float64'] and col not in ['Data', 'Date']:
+                    # Prawdopodobnie to wolumen
+                    volume_col = col
+                    break
+        
+        # Ostateczność - ostatnia kolumna numeryczna
+        if volume_col is None:
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) > 0:
+                volume_col = numeric_cols[-1]  # Ostatnia kolumna numeryczna
+        
+        if volume_col is None:
+            st.sidebar.error(f"Nie znaleziono kolumny z wolumenem dla {ticker}")
+            return 0
+        
+        # Pobierz wolumeny
+        volumes = df[volume_col].values
+        
+        # Konwersja na liczby
+        volumes = pd.to_numeric(volumes, errors='coerce')
+        volumes = volumes[~np.isnan(volumes)]
+        
+        if len(volumes) < 5:
+            return 0
+        
+        # Oblicz RVOL
+        avg_vol = np.mean(volumes)
+        today_vol = volumes[-1]
+        
+        if avg_vol == 0:
+            return 0
+        
+        rvol = today_vol / avg_vol
+        
+        # Dla debug - pokaż w sidebarze
+        st.sidebar.success(f"{ticker}: RVOL={rvol:.2f}, kolumna={volume_col}")
+        
+        return rvol
+        
+    except Exception as e:
+        st.sidebar.error(f"Błąd dla {ticker}: {e}")
+        return 0
+def quick_rvol_check(ticker):
+    """
+    FAZA 1: Szybkie sprawdzenie RVOL - NAPRAWIONA WERSJA
+    """
+    try:
+        url = f"https://stooq.pl/q/d/l/?s={ticker.lower()}.us&i=d"
+        
+        response = requests.get(url, timeout=TIMEOUT_SECONDS)
+        
+        if response.status_code != 200:
+            return 0
+        
+        # Wczytaj CSV
+        df = pd.read_csv(StringIO(response.text))
+        
+        if df.empty or len(df) < 5:
+            return 0
+        
+        # DEBUG - zobaczmy kolumny (możesz potem usunąć)
+        st.sidebar.write(f"Kolumny dla {ticker}: {df.columns.tolist()}")
+        
+        # Znajdź kolumnę z wolumenem - różne możliwe nazwy
+        volume_col = None
+        
+        # Lista możliwych nazw kolumn w stooq.pl
+        possible_names = ['Wolumen', 'Volume', 'Wol', 'Vol', 'Obrot', 'Obrót']
+        
+        for col in df.columns:
+            if col in possible_names:
+                volume_col = col
+                break
+        
+        # Jeśli nie znaleziono po nazwie, sprawdź typ danych
+        if volume_col is None:
+            for col in df.columns:
+                if df[col].dtype in ['int64', 'float64'] and col not in ['Data', 'Date']:
+                    # Prawdopodobnie to wolumen
+                    volume_col = col
+                    break
+        
+        # Ostateczność - ostatnia kolumna numeryczna
+        if volume_col is None:
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) > 0:
+                volume_col = numeric_cols[-1]  # Ostatnia kolumna numeryczna
+        
+        if volume_col is None:
+            st.sidebar.error(f"Nie znaleziono kolumny z wolumenem dla {ticker}")
+            return 0
+        
+        # Pobierz wolumeny
+        volumes = df[volume_col].values
+        
+        # Konwersja na liczby
+        volumes = pd.to_numeric(volumes, errors='coerce')
+        volumes = volumes[~np.isnan(volumes)]
+        
+        if len(volumes) < 5:
+            return 0
+        
+        # Oblicz RVOL
+        avg_vol = np.mean(volumes)
+        today_vol = volumes[-1]
+        
+        if avg_vol == 0:
+            return 0
+        
+        rvol = today_vol / avg_vol
+        
+        # Dla debug - pokaż w sidebarze
+        st.sidebar.success(f"{ticker}: RVOL={rvol:.2f}, kolumna={volume_col}")
+        
+        return rvol
+        
+    except Exception as e:
+        st.sidebar.error(f"Błąd dla {ticker}: {e}")
+        return 0
+def quick_rvol_check(ticker):
+    """
+    FAZA 1: Szybkie sprawdzenie RVOL - NAPRAWIONA WERSJA
+    """
+    try:
+        url = f"https://stooq.pl/q/d/l/?s={ticker.lower()}.us&i=d"
+        
+        response = requests.get(url, timeout=TIMEOUT_SECONDS)
+        
+        if response.status_code != 200:
+            return 0
+        
+        # Wczytaj CSV
+        df = pd.read_csv(StringIO(response.text))
+        
+        if df.empty or len(df) < 5:
+            return 0
+        
+        # DEBUG - zobaczmy kolumny (możesz potem usunąć)
+        st.sidebar.write(f"Kolumny dla {ticker}: {df.columns.tolist()}")
+        
+        # Znajdź kolumnę z wolumenem - różne możliwe nazwy
+        volume_col = None
+        
+        # Lista możliwych nazw kolumn w stooq.pl
+        possible_names = ['Wolumen', 'Volume', 'Wol', 'Vol', 'Obrot', 'Obrót']
+        
+        for col in df.columns:
+            if col in possible_names:
+                volume_col = col
+                break
+        
+        # Jeśli nie znaleziono po nazwie, sprawdź typ danych
+        if volume_col is None:
+            for col in df.columns:
+                if df[col].dtype in ['int64', 'float64'] and col not in ['Data', 'Date']:
+                    # Prawdopodobnie to wolumen
+                    volume_col = col
+                    break
+        
+        # Ostateczność - ostatnia kolumna numeryczna
+        if volume_col is None:
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) > 0:
+                volume_col = numeric_cols[-1]  # Ostatnia kolumna numeryczna
+        
+        if volume_col is None:
+            st.sidebar.error(f"Nie znaleziono kolumny z wolumenem dla {ticker}")
+            return 0
+        
+        # Pobierz wolumeny
+        volumes = df[volume_col].values
+        
+        # Konwersja na liczby
+        volumes = pd.to_numeric(volumes, errors='coerce')
+        volumes = volumes[~np.isnan(volumes)]
+        
+        if len(volumes) < 5:
+            return 0
+        
+        # Oblicz RVOL
+        avg_vol = np.mean(volumes)
+        today_vol = volumes[-1]
+        
+        if avg_vol == 0:
+            return 0
+        
+        rvol = today_vol / avg_vol
+        
+        # Dla debug - pokaż w sidebarze
+        st.sidebar.success(f"{ticker}: RVOL={rvol:.2f}, kolumna={volume_col}")
+        
+        return rvol
+        
+    except Exception as e:
+        st.sidebar.error(f"Błąd dla {ticker}: {e}")
+        return 0
+def quick_rvol_check(ticker):
+    """
+    FAZA 1: Szybkie sprawdzenie RVOL - NAPRAWIONA WERSJA
+    """
+    try:
+        url = f"https://stooq.pl/q/d/l/?s={ticker.lower()}.us&i=d"
+        
+        response = requests.get(url, timeout=TIMEOUT_SECONDS)
+        
+        if response.status_code != 200:
+            return 0
+        
+        # Wczytaj CSV
+        df = pd.read_csv(StringIO(response.text))
+        
+        if df.empty or len(df) < 5:
+            return 0
+        
+        # DEBUG - zobaczmy kolumny (możesz potem usunąć)
+        st.sidebar.write(f"Kolumny dla {ticker}: {df.columns.tolist()}")
+        
+        # Znajdź kolumnę z wolumenem - różne możliwe nazwy
+        volume_col = None
+        
+        # Lista możliwych nazw kolumn w stooq.pl
+        possible_names = ['Wolumen', 'Volume', 'Wol', 'Vol', 'Obrot', 'Obrót']
+        
+        for col in df.columns:
+            if col in possible_names:
+                volume_col = col
+                break
+        
+        # Jeśli nie znaleziono po nazwie, sprawdź typ danych
+        if volume_col is None:
+            for col in df.columns:
+                if df[col].dtype in ['int64', 'float64'] and col not in ['Data', 'Date']:
+                    # Prawdopodobnie to wolumen
+                    volume_col = col
+                    break
+        
+        # Ostateczność - ostatnia kolumna numeryczna
+        if volume_col is None:
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) > 0:
+                volume_col = numeric_cols[-1]  # Ostatnia kolumna numeryczna
+        
+        if volume_col is None:
+            st.sidebar.error(f"Nie znaleziono kolumny z wolumenem dla {ticker}")
+            return 0
+        
+        # Pobierz wolumeny
+        volumes = df[volume_col].values
+        
+        # Konwersja na liczby
+        volumes = pd.to_numeric(volumes, errors='coerce')
+        volumes = volumes[~np.isnan(volumes)]
+        
+        if len(volumes) < 5:
+            return 0
+        
+        # Oblicz RVOL
+        avg_vol = np.mean(volumes)
+        today_vol = volumes[-1]
+        
+        if avg_vol == 0:
+            return 0
+        
+        rvol = today_vol / avg_vol
+        
+        # Dla debug - pokaż w sidebarze
+        st.sidebar.success(f"{ticker}: RVOL={rvol:.2f}, kolumna={volume_col}")
+        
+        return rvol
+        
+    except Exception as e:
+        st.sidebar.error(f"Błąd dla {ticker}: {e}")
+        return 0
+def quick_rvol_check(ticker):
+    """
+    FAZA 1: Szybkie sprawdzenie RVOL - NAPRAWIONA WERSJA
+    """
+    try:
+        url = f"https://stooq.pl/q/d/l/?s={ticker.lower()}.us&i=d"
+        
+        response = requests.get(url, timeout=TIMEOUT_SECONDS)
+        
+        if response.status_code != 200:
+            return 0
+        
+        # Wczytaj CSV
+        df = pd.read_csv(StringIO(response.text))
+        
+        if df.empty or len(df) < 5:
+            return 0
+        
+        # DEBUG - zobaczmy kolumny (możesz potem usunąć)
+        st.sidebar.write(f"Kolumny dla {ticker}: {df.columns.tolist()}")
+        
+        # Znajdź kolumnę z wolumenem - różne możliwe nazwy
+        volume_col = None
+        
+        # Lista możliwych nazw kolumn w stooq.pl
+        possible_names = ['Wolumen', 'Volume', 'Wol', 'Vol', 'Obrot', 'Obrót']
+        
+        for col in df.columns:
+            if col in possible_names:
+                volume_col = col
+                break
+        
+        # Jeśli nie znaleziono po nazwie, sprawdź typ danych
+        if volume_col is None:
+            for col in df.columns:
+                if df[col].dtype in ['int64', 'float64'] and col not in ['Data', 'Date']:
+                    # Prawdopodobnie to wolumen
+                    volume_col = col
+                    break
+        
+        # Ostateczność - ostatnia kolumna numeryczna
+        if volume_col is None:
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) > 0:
+                volume_col = numeric_cols[-1]  # Ostatnia kolumna numeryczna
+        
+        if volume_col is None:
+            st.sidebar.error(f"Nie znaleziono kolumny z wolumenem dla {ticker}")
+            return 0
+        
+        # Pobierz wolumeny
+        volumes = df[volume_col].values
+        
+        # Konwersja na liczby
+        volumes = pd.to_numeric(volumes, errors='coerce')
+        volumes = volumes[~np.isnan(volumes)]
+        
+        if len(volumes) < 5:
+            return 0
+        
+        # Oblicz RVOL
+        avg_vol = np.mean(volumes)
+        today_vol = volumes[-1]
+        
+        if avg_vol == 0:
+            return 0
+        
+        rvol = today_vol / avg_vol
+        
+        # Dla debug - pokaż w sidebarze
+        st.sidebar.success(f"{ticker}: RVOL={rvol:.2f}, kolumna={volume_col}")
+        
+        return rvol
+        
+    except Exception as e:
+        st.sidebar.error(f"Błąd dla {ticker}: {e}")
+        return 0
+def quick_rvol_check(ticker):
+    """
+    FAZA 1: Szybkie sprawdzenie RVOL - NAPRAWIONA WERSJA
+    """
+    try:
+        url = f"https://stooq.pl/q/d/l/?s={ticker.lower()}.us&i=d"
+        
+        response = requests.get(url, timeout=TIMEOUT_SECONDS)
+        
+        if response.status_code != 200:
+            return 0
+        
+        # Wczytaj CSV
+        df = pd.read_csv(StringIO(response.text))
+        
+        if df.empty or len(df) < 5:
+            return 0
+        
+        # DEBUG - zobaczmy kolumny (możesz potem usunąć)
+        st.sidebar.write(f"Kolumny dla {ticker}: {df.columns.tolist()}")
+        
+        # Znajdź kolumnę z wolumenem - różne możliwe nazwy
+        volume_col = None
+        
+        # Lista możliwych nazw kolumn w stooq.pl
+        possible_names = ['Wolumen', 'Volume', 'Wol', 'Vol', 'Obrot', 'Obrót']
+        
+        for col in df.columns:
+            if col in possible_names:
+                volume_col = col
+                break
+        
+        # Jeśli nie znaleziono po nazwie, sprawdź typ danych
+        if volume_col is None:
+            for col in df.columns:
+                if df[col].dtype in ['int64', 'float64'] and col not in ['Data', 'Date']:
+                    # Prawdopodobnie to wolumen
+                    volume_col = col
+                    break
+        
+        # Ostateczność - ostatnia kolumna numeryczna
+        if volume_col is None:
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) > 0:
+                volume_col = numeric_cols[-1]  # Ostatnia kolumna numeryczna
+        
+        if volume_col is None:
+            st.sidebar.error(f"Nie znaleziono kolumny z wolumenem dla {ticker}")
+            return 0
+        
+        # Pobierz wolumeny
+        volumes = df[volume_col].values
+        
+        # Konwersja na liczby
+        volumes = pd.to_numeric(volumes, errors='coerce')
+        volumes = volumes[~np.isnan(volumes)]
+        
+        if len(volumes) < 5:
+            return 0
+        
+        # Oblicz RVOL
+        avg_vol = np.mean(volumes)
+        today_vol = volumes[-1]
+        
+        if avg_vol == 0:
+            return 0
+        
+        rvol = today_vol / avg_vol
+        
+        # Dla debug - pokaż w sidebarze
+        st.sidebar.success(f"{ticker}: RVOL={rvol:.2f}, kolumna={volume_col}")
+        
+        return rvol
+        
+    except Exception as e:
+        st.sidebar.error(f"Błąd dla {ticker}: {e}")
+        return 0
+def quick_rvol_check(ticker):
+    """
+    FAZA 1: Szybkie sprawdzenie RVOL - NAPRAWIONA WERSJA
+    """
+    try:
+        url = f"https://stooq.pl/q/d/l/?s={ticker.lower()}.us&i=d"
+        
+        response = requests.get(url, timeout=TIMEOUT_SECONDS)
+        
+        if response.status_code != 200:
+            return 0
+        
+        # Wczytaj CSV
+        df = pd.read_csv(StringIO(response.text))
+        
+        if df.empty or len(df) < 5:
+            return 0
+        
+        # DEBUG - zobaczmy kolumny (możesz potem usunąć)
+        st.sidebar.write(f"Kolumny dla {ticker}: {df.columns.tolist()}")
+        
+        # Znajdź kolumnę z wolumenem - różne możliwe nazwy
+        volume_col = None
+        
+        # Lista możliwych nazw kolumn w stooq.pl
+        possible_names = ['Wolumen', 'Volume', 'Wol', 'Vol', 'Obrot', 'Obrót']
+        
+        for col in df.columns:
+            if col in possible_names:
+                volume_col = col
+                break
+        
+        # Jeśli nie znaleziono po nazwie, sprawdź typ danych
+        if volume_col is None:
+            for col in df.columns:
+                if df[col].dtype in ['int64', 'float64'] and col not in ['Data', 'Date']:
+                    # Prawdopodobnie to wolumen
+                    volume_col = col
+                    break
+        
+        # Ostateczność - ostatnia kolumna numeryczna
+        if volume_col is None:
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) > 0:
+                volume_col = numeric_cols[-1]  # Ostatnia kolumna numeryczna
+        
+        if volume_col is None:
+            st.sidebar.error(f"Nie znaleziono kolumny z wolumenem dla {ticker}")
+            return 0
+        
+        # Pobierz wolumeny
+        volumes = df[volume_col].values
+        
+        # Konwersja na liczby
+        volumes = pd.to_numeric(volumes, errors='coerce')
+        volumes = volumes[~np.isnan(volumes)]
+        
+        if len(volumes) < 5:
+            return 0
+        
+        # Oblicz RVOL
+        avg_vol = np.mean(volumes)
+        today_vol = volumes[-1]
+        
+        if avg_vol == 0:
+            return 0
+        
+        rvol = today_vol / avg_vol
+        
+        # Dla debug - pokaż w sidebarze
+        st.sidebar.success(f"{ticker}: RVOL={rvol:.2f}, kolumna={volume_col}")
+        
+        return rvol
+        
+    except Exception as e:
+        st.sidebar.error(f"Błąd dla {ticker}: {e}")
+        return 0 if avg_vol > 0 else 0
+def quick_rvol_check(ticker):
+    """
+    FAZA 1: Szybkie sprawdzenie RVOL - NAPRAWIONA WERSJA
+    """
+    try:
+        url = f"https://stooq.pl/q/d/l/?s={ticker.lower()}.us&i=d"
+        
+        response = requests.get(url, timeout=TIMEOUT_SECONDS)
+        
+        if response.status_code != 200:
+            return 0
+        
+        # Wczytaj CSV
+        df = pd.read_csv(StringIO(response.text))
+        
+        if df.empty or len(df) < 5:
+            return 0
+        
+        # DEBUG - zobaczmy kolumny (możesz potem usunąć)
+        st.sidebar.write(f"Kolumny dla {ticker}: {df.columns.tolist()}")
+        
+        # Znajdź kolumnę z wolumenem - różne możliwe nazwy
+        volume_col = None
+        
+        # Lista możliwych nazw kolumn w stooq.pl
+        possible_names = ['Wolumen', 'Volume', 'Wol', 'Vol', 'Obrot', 'Obrót']
+        
+        for col in df.columns:
+            if col in possible_names:
+                volume_col = col
+                break
+        
+        # Jeśli nie znaleziono po nazwie, sprawdź typ danych
+        if volume_col is None:
+            for col in df.columns:
+                if df[col].dtype in ['int64', 'float64'] and col not in ['Data', 'Date']:
+                    # Prawdopodobnie to wolumen
+                    volume_col = col
+                    break
+        
+        # Ostateczność - ostatnia kolumna numeryczna
+        if volume_col is None:
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) > 0:
+                volume_col = numeric_cols[-1]  # Ostatnia kolumna numeryczna
+        
+        if volume_col is None:
+            st.sidebar.error(f"Nie znaleziono kolumny z wolumenem dla {ticker}")
+            return 0
+        
+        # Pobierz wolumeny
+        volumes = df[volume_col].values
+        
+        # Konwersja na liczby
+        volumes = pd.to_numeric(volumes, errors='coerce')
+        volumes = volumes[~np.isnan(volumes)]
+        
+        if len(volumes) < 5:
+            return 0
+        
+        # Oblicz RVOL
+        avg_vol = np.mean(volumes)
+        today_vol = volumes[-1]
+        
+        if avg_vol == 0:
+            return 0
+        
+        rvol = today_vol / avg_vol
+        
+        # Dla debug - pokaż w sidebarze
+        st.sidebar.success(f"{ticker}: RVOL={rvol:.2f}, kolumna={volume_col}")
+        
+        return rvol
+        
+    except Exception as e:
+        st.sidebar.error(f"Błąd dla {ticker}: {e}")
+        return 0
+def quick_rvol_check(ticker):
+    """
+    FAZA 1: Szybkie sprawdzenie RVOL - NAPRAWIONA WERSJA
+    """
+    try:
+        url = f"https://stooq.pl/q/d/l/?s={ticker.lower()}.us&i=d"
+        
+        response = requests.get(url, timeout=TIMEOUT_SECONDS)
+        
+        if response.status_code != 200:
+            return 0
+        
+        # Wczytaj CSV
+        df = pd.read_csv(StringIO(response.text))
+        
+        if df.empty or len(df) < 5:
+            return 0
+        
+        # DEBUG - zobaczmy kolumny (możesz potem usunąć)
+        st.sidebar.write(f"Kolumny dla {ticker}: {df.columns.tolist()}")
+        
+        # Znajdź kolumnę z wolumenem - różne możliwe nazwy
+        volume_col = None
+        
+        # Lista możliwych nazw kolumn w stooq.pl
+        possible_names = ['Wolumen', 'Volume', 'Wol', 'Vol', 'Obrot', 'Obrót']
+        
+        for col in df.columns:
+            if col in possible_names:
+                volume_col = col
+                break
+        
+        # Jeśli nie znaleziono po nazwie, sprawdź typ danych
+        if volume_col is None:
+            for col in df.columns:
+                if df[col].dtype in ['int64', 'float64'] and col not in ['Data', 'Date']:
+                    # Prawdopodobnie to wolumen
+                    volume_col = col
+                    break
+        
+        # Ostateczność - ostatnia kolumna numeryczna
+        if volume_col is None:
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) > 0:
+                volume_col = numeric_cols[-1]  # Ostatnia kolumna numeryczna
+        
+        if volume_col is None:
+            st.sidebar.error(f"Nie znaleziono kolumny z wolumenem dla {ticker}")
+            return 0
+        
+        # Pobierz wolumeny
+        volumes = df[volume_col].values
+        
+        # Konwersja na liczby
+        volumes = pd.to_numeric(volumes, errors='coerce')
+        volumes = volumes[~np.isnan(volumes)]
+        
+        if len(volumes) < 5:
+            return 0
+        
+        # Oblicz RVOL
+        avg_vol = np.mean(volumes)
+        today_vol = volumes[-1]
+        
+        if avg_vol == 0:
+            return 0
+        
+        rvol = today_vol / avg_vol
+        
+        # Dla debug - pokaż w sidebarze
+        st.sidebar.success(f"{ticker}: RVOL={rvol:.2f}, kolumna={volume_col}")
+        
+        return rvol
+        
+    except Exception as e:
+        st.sidebar.error(f"Błąd dla {ticker}: {e}")
+        return 0
+def quick_rvol_check(ticker):
+    """
+    FAZA 1: Szybkie sprawdzenie RVOL - NAPRAWIONA WERSJA
+    """
+    try:
+        url = f"https://stooq.pl/q/d/l/?s={ticker.lower()}.us&i=d"
+        
+        response = requests.get(url, timeout=TIMEOUT_SECONDS)
+        
+        if response.status_code != 200:
+            return 0
+        
+        # Wczytaj CSV
+        df = pd.read_csv(StringIO(response.text))
+        
+        if df.empty or len(df) < 5:
+            return 0
+        
+        # DEBUG - zobaczmy kolumny (możesz potem usunąć)
+        st.sidebar.write(f"Kolumny dla {ticker}: {df.columns.tolist()}")
+        
+        # Znajdź kolumnę z wolumenem - różne możliwe nazwy
+        volume_col = None
+        
+        # Lista możliwych nazw kolumn w stooq.pl
+        possible_names = ['Wolumen', 'Volume', 'Wol', 'Vol', 'Obrot', 'Obrót']
+        
+        for col in df.columns:
+            if col in possible_names:
+                volume_col = col
+                break
+        
+        # Jeśli nie znaleziono po nazwie, sprawdź typ danych
+        if volume_col is None:
+            for col in df.columns:
+                if df[col].dtype in ['int64', 'float64'] and col not in ['Data', 'Date']:
+                    # Prawdopodobnie to wolumen
+                    volume_col = col
+                    break
+        
+        # Ostateczność - ostatnia kolumna numeryczna
+        if volume_col is None:
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) > 0:
+                volume_col = numeric_cols[-1]  # Ostatnia kolumna numeryczna
+        
+        if volume_col is None:
+            st.sidebar.error(f"Nie znaleziono kolumny z wolumenem dla {ticker}")
+            return 0
+        
+        # Pobierz wolumeny
+        volumes = df[volume_col].values
+        
+        # Konwersja na liczby
+        volumes = pd.to_numeric(volumes, errors='coerce')
+        volumes = volumes[~np.isnan(volumes)]
+        
+        if len(volumes) < 5:
+            return 0
+        
+        # Oblicz RVOL
+        avg_vol = np.mean(volumes)
+        today_vol = volumes[-1]
+        
+        if avg_vol == 0:
+            return 0
+        
+        rvol = today_vol / avg_vol
+        
+        # Dla debug - pokaż w sidebarze
+        st.sidebar.success(f"{ticker}: RVOL={rvol:.2f}, kolumna={volume_col}")
+        
+        return rvol
+        
+    except Exception as e:
+        st.sidebar.error(f"Błąd dla {ticker}: {e}")
+        return 0
+def quick_rvol_check(ticker):
+    """
+    FAZA 1: Szybkie sprawdzenie RVOL - NAPRAWIONA WERSJA
+    """
+    try:
+        url = f"https://stooq.pl/q/d/l/?s={ticker.lower()}.us&i=d"
+        
+        response = requests.get(url, timeout=TIMEOUT_SECONDS)
+        
+        if response.status_code != 200:
+            return 0
+        
+        # Wczytaj CSV
+        df = pd.read_csv(StringIO(response.text))
+        
+        if df.empty or len(df) < 5:
+            return 0
+        
+        # DEBUG - zobaczmy kolumny (możesz potem usunąć)
+        st.sidebar.write(f"Kolumny dla {ticker}: {df.columns.tolist()}")
+        
+        # Znajdź kolumnę z wolumenem - różne możliwe nazwy
+        volume_col = None
+        
+        # Lista możliwych nazw kolumn w stooq.pl
+        possible_names = ['Wolumen', 'Volume', 'Wol', 'Vol', 'Obrot', 'Obrót']
+        
+        for col in df.columns:
+            if col in possible_names:
+                volume_col = col
+                break
+        
+        # Jeśli nie znaleziono po nazwie, sprawdź typ danych
+        if volume_col is None:
+            for col in df.columns:
+                if df[col].dtype in ['int64', 'float64'] and col not in ['Data', 'Date']:
+                    # Prawdopodobnie to wolumen
+                    volume_col = col
+                    break
+        
+        # Ostateczność - ostatnia kolumna numeryczna
+        if volume_col is None:
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) > 0:
+                volume_col = numeric_cols[-1]  # Ostatnia kolumna numeryczna
+        
+        if volume_col is None:
+            st.sidebar.error(f"Nie znaleziono kolumny z wolumenem dla {ticker}")
+            return 0
+        
+        # Pobierz wolumeny
+        volumes = df[volume_col].values
+        
+        # Konwersja na liczby
+        volumes = pd.to_numeric(volumes, errors='coerce')
+        volumes = volumes[~np.isnan(volumes)]
+        
+        if len(volumes) < 5:
+            return 0
+        
+        # Oblicz RVOL
+        avg_vol = np.mean(volumes)
+        today_vol = volumes[-1]
+        
+        if avg_vol == 0:
+            return 0
+        
+        rvol = today_vol / avg_vol
+        
+        # Dla debug - pokaż w sidebarze
+        st.sidebar.success(f"{ticker}: RVOL={rvol:.2f}, kolumna={volume_col}")
+        
+        return rvol
+        
+    except Exception as e:
+        st.sidebar.error(f"Błąd dla {ticker}: {e}")
+        return 0
 # ============================================
 # TESTY - WIDOCZNE NA GÓRZE STRONY
 # ============================================
